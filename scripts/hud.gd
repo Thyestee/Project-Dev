@@ -1,165 +1,184 @@
 extends CanvasLayer
-## On-screen UI: stats, ore bag, messages, the elevator shop and the relic collection.
+## Screen UI: day and trip timer, backpack, tool hotbar, hints, menus (door, forge,
+## workbench, day summary), the build palette and screen fades.
 
 const Data := preload("res://scripts/game_data.gd")
+const Icons := preload("res://scripts/icons.gd")
 
-const PANEL_COLOR := Color(0.08, 0.07, 0.07, 0.9)
+const VIEW := Vector2(1280, 720)
+const PANEL_COLOR := Color(0.08, 0.07, 0.06, 0.9)
 const BORDER_COLOR := Color(0.55, 0.42, 0.25)
-const TEXT_COLOR := Color(0.92, 0.9, 0.86)
-const DIM_COLOR := Color(0.55, 0.52, 0.48)
+const TEXT_COLOR := Color(0.93, 0.9, 0.85)
+const DIM_COLOR := Color(0.62, 0.58, 0.52)
 const GOLD := Color(1.0, 0.84, 0.35)
+const WARN := Color(1.0, 0.55, 0.45)
+const GOOD := Color(0.6, 0.9, 0.6)
 
 var game
 
-var _money_label: Label
-var _level_label: Label
-var _pick_label: Label
-var _bag_label: Label
-var _bag_bar: ProgressBar
-var _bonus_label: Label
-var _bag_value_label: Label
-var _ore_labels := {}
-var _title_label: Label
+var _day_label: Label
+var _place_label: Label
+var _clock_label: Label
+var _inv_box: VBoxContainer
+var _hotbar: HBoxContainer
+var _tool_label: Label
+var _hint: Label
 var _toast: Label
 var _toast_tween: Tween
-var _hint: Label
-var _elevator: PanelContainer
-var _elevator_box: VBoxContainer
-var _level_buttons: Array = []
-var _collection: PanelContainer
-var _collection_box: VBoxContainer
-var _status_timer := 0.0
+var _menu: PanelContainer
+var _menu_box: VBoxContainer
+var _menu_kind := ""
+var _menu_data := {}
+var _build_panel: PanelContainer
+var _build_box: HBoxContainer
+var _fade: ColorRect
 
 
 func _ready() -> void:
-	_build_stats()
-	_build_bag()
-	_build_overlay_labels()
-	_elevator = _make_panel(Vector2(370, 40), Vector2(540, 0))
-	_elevator_box = VBoxContainer.new()
-	_elevator_box.add_theme_constant_override("separation", 8)
-	_elevator.add_child(_elevator_box)
-	_elevator.hide()
-	_collection = _make_panel(Vector2(160, 40), Vector2(960, 0))
-	_collection_box = VBoxContainer.new()
-	_collection_box.add_theme_constant_override("separation", 10)
-	_collection.add_child(_collection_box)
-	_collection.hide()
-	refresh()
+	_build_status()
+	_build_backpack()
+	_hotbar = HBoxContainer.new()
+	_hotbar.add_theme_constant_override("separation", 8)
+	add_child(_hotbar)
+	_tool_label = _make_label("", 15, TEXT_COLOR, true)
+	_tool_label.position = Vector2(440, 612)
+	_tool_label.size = Vector2(400, 24)
+	add_child(_tool_label)
+	_hint = _make_label("", 17, GOLD, true)
+	_hint.position = Vector2(340, 580)
+	_hint.size = Vector2(600, 26)
+	add_child(_hint)
+	_toast = _make_label("", 18, TEXT_COLOR, true)
+	_toast.position = Vector2(290, 70)
+	_toast.size = Vector2(700, 28)
+	_toast.modulate.a = 0.0
+	add_child(_toast)
+
+	var help := _make_label("WASD move   Left click hit   1-2 / wheel switch tool   E interact   B build (at home)", 13, DIM_COLOR, true)
+	help.position = Vector2(16, 694)
+	add_child(help)
+
+	_build_panel = _make_panel(Vector2.ZERO)
+	var build_v := VBoxContainer.new()
+	build_v.add_theme_constant_override("separation", 6)
+	_build_panel.add_child(build_v)
+	build_v.add_child(_make_label("BUILD   -   left click: place   right click: cancel / pick up   B: done", 13, DIM_COLOR))
+	_build_box = HBoxContainer.new()
+	_build_box.add_theme_constant_override("separation", 6)
+	build_v.add_child(_build_box)
+	_build_panel.hide()
+
+	_menu = _make_panel(Vector2.ZERO)
+	_menu.custom_minimum_size = Vector2(460, 0)
+	_menu_box = VBoxContainer.new()
+	_menu_box.add_theme_constant_override("separation", 8)
+	_menu.add_child(_menu_box)
+	_menu.hide()
+
+	_fade = ColorRect.new()
+	_fade.color = Color(0, 0, 0, 0)
+	_fade.size = VIEW
+	_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_fade)
 
 
-func _process(delta: float) -> void:
-	# Keep the regrow countdowns in the elevator menu ticking.
-	_status_timer -= delta
-	if _elevator.visible and _status_timer <= 0.0:
-		_status_timer = 0.5
-		for i in _level_buttons.size():
-			var b: Button = _level_buttons[i]
-			b.text = _level_button_text(i)
-
-
-# --- Public API -------------------------------------------------------------
+# --- Public API -----------------------------------------------------------------
 
 func refresh() -> void:
 	if game == null:
 		return
-	var info: Dictionary = Data.LEVELS[game.current_level]
-	var level_text := "Level %d - %s" % [game.current_level + 1, info["name"]]
-	_money_label.text = "$%d" % game.money
-	_level_label.text = level_text
-	_title_label.text = level_text
-	_pick_label.text = "%s  (power %.1f)" % [Data.PICKAXES[game.pick_tier]["name"], game.pick_power()]
-	_bag_label.text = "%s  %d / %d" % [Data.BAGS[game.bag_tier]["name"], game.bag_count(), game.bag_capacity()]
-	_bag_bar.max_value = game.bag_capacity()
-	_bag_bar.value = game.bag_count()
-	_bonus_label.text = "Relics %d / %d  (+%d%% ore value)" % [
-		game.unique_relics(), Data.COLLECTIBLES.size(), roundi(game.relic_bonus() * 100.0)]
-	for t in _ore_labels:
-		var labels: Array = _ore_labels[t]
-		var count := int(game.inventory.get(t, 0))
-		labels[1].text = "x %d" % count
-		var col := TEXT_COLOR if count > 0 else DIM_COLOR
-		labels[0].add_theme_color_override("font_color", col)
-		labels[1].add_theme_color_override("font_color", col)
-	_bag_value_label.text = "Worth  $%d" % game.bag_value()
-	if _elevator.visible:
-		_rebuild_elevator()
-	if _collection.visible:
-		_rebuild_collection()
+	_day_label.text = "Day %d" % game.day
+	_place_label.text = game.place_name()
+	_rebuild_backpack()
+	_rebuild_hotbar()
+	if _menu.visible:
+		_rebuild_menu()
+	if _build_panel.visible:
+		_rebuild_build()
 
 
-func show_message(text: String, color := Color.WHITE) -> void:
+func update_clock(seconds_left: float) -> void:
+	if seconds_left < 0.0:
+		_clock_label.hide()
+		return
+	_clock_label.show()
+	var s := ceili(seconds_left)
+	_clock_label.text = "%d:%02d" % [s / 60, s % 60]
+	_clock_label.add_theme_color_override("font_color", WARN if seconds_left <= 60.0 else GOLD)
+
+
+func show_message(text: String, color := TEXT_COLOR) -> void:
 	_toast.text = text
 	_toast.add_theme_color_override("font_color", color)
 	_toast.modulate.a = 1.0
 	if _toast_tween:
 		_toast_tween.kill()
 	_toast_tween = create_tween()
-	_toast_tween.tween_interval(2.4)
+	_toast_tween.tween_interval(2.6)
 	_toast_tween.tween_property(_toast, "modulate:a", 0.0, 0.8)
 
 
-func set_hint_visible(on: bool) -> void:
-	_hint.visible = on
+func set_hint(text: String) -> void:
+	_hint.text = text
 
 
 func any_open() -> bool:
-	return _elevator.visible or _collection.visible
+	return _menu.visible
 
 
-func elevator_open() -> bool:
-	return _elevator.visible
-
-
-func open_elevator() -> void:
-	_collection.hide()
-	_elevator.show()
-	_rebuild_elevator()
-	_update_input()
-
-
-func toggle_collection() -> void:
-	if _collection.visible:
-		close_menus()
-		return
-	_elevator.hide()
-	_collection.show()
-	_rebuild_collection()
-	_update_input()
+func open_menu(kind: String, data := {}) -> void:
+	_menu_kind = kind
+	_menu_data = data
+	_menu.show()
+	_rebuild_menu()
 
 
 func close_menus() -> void:
-	_elevator.hide()
-	_collection.hide()
-	_update_input()
+	_menu.hide()
+	_menu_kind = ""
 
 
-# --- Builders ---------------------------------------------------------------
+func set_build_mode(on: bool) -> void:
+	_build_panel.visible = on
+	if on:
+		_rebuild_build()
 
-func _update_input() -> void:
-	game.player.input_enabled = not any_open()
+
+## Fades to black, calls `mid`, fades back in, then calls `done`.
+func fade(mid: Callable, done: Callable) -> void:
+	var tw := create_tween()
+	tw.tween_property(_fade, "color:a", 1.0, 0.35)
+	tw.tween_callback(mid)
+	tw.tween_interval(0.1)
+	tw.tween_property(_fade, "color:a", 0.0, 0.35)
+	tw.tween_callback(done)
 
 
-func _make_panel(pos: Vector2, min_size: Vector2) -> PanelContainer:
+# --- Builders -----------------------------------------------------------------------
+
+func _make_panel(pos: Vector2) -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.position = pos
-	panel.custom_minimum_size = min_size
 	var style := StyleBoxFlat.new()
 	style.bg_color = PANEL_COLOR
 	style.border_color = BORDER_COLOR
 	style.set_border_width_all(2)
 	style.set_corner_radius_all(8)
-	style.set_content_margin_all(14)
+	style.set_content_margin_all(12)
 	panel.add_theme_stylebox_override("panel", style)
 	add_child(panel)
 	return panel
 
 
-func _make_label(text: String, font_size := 18, color := TEXT_COLOR) -> Label:
+func _make_label(text: String, font_size := 16, color := TEXT_COLOR, outline := false) -> Label:
 	var l := Label.new()
 	l.text = text
 	l.add_theme_font_size_override("font_size", font_size)
 	l.add_theme_color_override("font_color", color)
+	if outline:
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		l.add_theme_constant_override("outline_size", 5)
+		l.add_theme_color_override("font_outline_color", Color.BLACK)
 	return l
 
 
@@ -167,256 +186,243 @@ func _make_button(text: String, callback: Callable, enabled := true) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.disabled = not enabled
-	b.add_theme_font_size_override("font_size", 17)
-	b.custom_minimum_size = Vector2(0, 36)
+	b.add_theme_font_size_override("font_size", 15)
+	b.custom_minimum_size = Vector2(0, 34)
 	b.pressed.connect(callback)
 	return b
 
 
-func _build_stats() -> void:
-	var panel := _make_panel(Vector2(24, 24), Vector2(320, 0))
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 6)
-	panel.add_child(box)
-	box.add_child(_make_label("HOLLOW VEIN MINE", 14, BORDER_COLOR.lightened(0.3)))
-	_money_label = _make_label("$0", 30, GOLD)
-	box.add_child(_money_label)
-	_level_label = _make_label("", 17)
-	box.add_child(_level_label)
-	_pick_label = _make_label("", 17)
-	box.add_child(_pick_label)
-	_bag_label = _make_label("", 17)
-	box.add_child(_bag_label)
-	_bag_bar = ProgressBar.new()
-	_bag_bar.show_percentage = false
-	_bag_bar.custom_minimum_size = Vector2(0, 10)
-	var bar_bg := StyleBoxFlat.new()
-	bar_bg.bg_color = Color(0.2, 0.18, 0.16)
-	bar_bg.set_corner_radius_all(4)
-	var bar_fill := StyleBoxFlat.new()
-	bar_fill.bg_color = GOLD.darkened(0.15)
-	bar_fill.set_corner_radius_all(4)
-	_bag_bar.add_theme_stylebox_override("background", bar_bg)
-	_bag_bar.add_theme_stylebox_override("fill", bar_fill)
-	box.add_child(_bag_bar)
-	_bonus_label = _make_label("", 15, Color(1, 0.9, 0.6))
-	box.add_child(_bonus_label)
-
-	var help := _make_panel(Vector2(24, 530), Vector2(320, 0))
-	help.add_child(_make_label(
-		"Move / dig (hold):  WASD or arrows\n" +
-		"(ZQSD on AZERTY keyboards)\n" +
-		"E  -  elevator: sell, upgrade, travel\n" +
-		"C  -  relic collection\n" +
-		"Esc  -  close menu", 15, DIM_COLOR.lightened(0.2)))
+func _make_icon(id: String, s := 22.0) -> Control:
+	var icon := Control.new()
+	icon.custom_minimum_size = Vector2(s, s)
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon.draw.connect(_draw_item_icon.bind(icon, id, s))
+	return icon
 
 
-func _build_bag() -> void:
-	var panel := _make_panel(Vector2(936, 24), Vector2(320, 0))
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 6)
-	panel.add_child(box)
-	box.add_child(_make_label("ORE BAG", 14, BORDER_COLOR.lightened(0.3)))
-	for t in Data.ORE_ORDER:
-		var info: Dictionary = Data.BLOCKS[t]
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 10)
-		var swatch := ColorRect.new()
-		swatch.color = info["color"]
-		swatch.custom_minimum_size = Vector2(16, 16)
-		swatch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		row.add_child(swatch)
-		var name_label := _make_label("%s  ($%d)" % [info["name"], info["value"]], 17)
-		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(name_label)
-		var count_label := _make_label("x 0", 17)
-		row.add_child(count_label)
-		box.add_child(row)
-		_ore_labels[t] = [name_label, count_label]
-	box.add_child(HSeparator.new())
-	_bag_value_label = _make_label("", 18, GOLD)
-	box.add_child(_bag_value_label)
+func _draw_item_icon(icon: Control, id: String, s: float) -> void:
+	Icons.draw_item(icon, id, icon.size / 2.0, s)
 
 
-func _build_overlay_labels() -> void:
-	_title_label = _make_label("", 26, TEXT_COLOR)
-	_title_label.position = Vector2(370, 22)
-	_title_label.size = Vector2(540, 36)
-	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	add_child(_title_label)
-
-	_toast = _make_label("", 19)
-	_toast.position = Vector2(340, 72)
-	_toast.size = Vector2(600, 30)
-	_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_toast.add_theme_constant_override("outline_size", 6)
-	_toast.add_theme_color_override("font_outline_color", Color.BLACK)
-	_toast.modulate.a = 0.0
-	add_child(_toast)
-
-	_hint = _make_label("Press E to use the elevator", 18, GOLD)
-	_hint.position = Vector2(370, 668)
-	_hint.size = Vector2(540, 30)
-	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_hint.add_theme_constant_override("outline_size", 5)
-	_hint.add_theme_color_override("font_outline_color", Color.BLACK)
-	_hint.hide()
-	add_child(_hint)
-
-
-func _clear(box: Container) -> void:
+func _clear(box: Node) -> void:
 	for child in box.get_children():
 		box.remove_child(child)
 		child.queue_free()
 
 
-# --- Elevator ---------------------------------------------------------------
-
-func _rebuild_elevator() -> void:
-	# Remember which button had focus so keyboard navigation survives a rebuild.
-	var focus_index := 0
-	var owner_control := get_viewport().gui_get_focus_owner()
-	var old_buttons := _buttons_in(_elevator_box)
-	if owner_control != null and owner_control in old_buttons:
-		focus_index = old_buttons.find(owner_control)
-
-	_clear(_elevator_box)
-	_level_buttons.clear()
-	_elevator_box.add_child(_make_label("MINE ELEVATOR", 22, GOLD))
-	_elevator_box.add_child(_make_label("Money  $%d" % game.money, 18))
-
-	var worth: int = game.bag_value()
-	_elevator_box.add_child(_make_button("Sell all ore  (+$%d)" % worth, Callable(game, "sell_all"), worth > 0))
-
-	var pick_cost: int = game.next_pick_cost()
-	if pick_cost < 0:
-		_elevator_box.add_child(_make_button("Pickaxe fully upgraded", func(): pass, false))
-	else:
-		var next_pick: Dictionary = Data.PICKAXES[game.pick_tier + 1]
-		_elevator_box.add_child(_make_button("Upgrade pickaxe: %s (power %.1f)  $%d" % [
-			next_pick["name"], next_pick["power"], pick_cost], Callable(game, "buy_pickaxe"), game.money >= pick_cost))
-
-	var bag_cost: int = game.next_bag_cost()
-	if bag_cost < 0:
-		_elevator_box.add_child(_make_button("Bag fully upgraded", func(): pass, false))
-	else:
-		var next_bag: Dictionary = Data.BAGS[game.bag_tier + 1]
-		_elevator_box.add_child(_make_button("Upgrade bag: %s (%d slots)  $%d" % [
-			next_bag["name"], next_bag["capacity"], bag_cost], Callable(game, "buy_bag"), game.money >= bag_cost))
-
-	_elevator_box.add_child(HSeparator.new())
-	_elevator_box.add_child(_make_label("LEVELS", 16, BORDER_COLOR.lightened(0.3)))
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.add_theme_constant_override("h_separation", 8)
-	grid.add_theme_constant_override("v_separation", 8)
-	_elevator_box.add_child(grid)
-	for i in Data.LEVELS.size():
-		var b: Button
-		if i < game.unlocked:
-			b = _make_button(_level_button_text(i), Callable(game, "travel_to").bind(i), i != game.current_level)
-		elif i == game.unlocked:
-			var cost: int = Data.LEVELS[i]["cost"]
-			b = _make_button("Buy level %d: %s\n$%d" % [i + 1, Data.LEVELS[i]["name"], cost],
-				Callable(game, "buy_level"), game.money >= cost)
-		else:
-			b = _make_button("Level %d\n(locked)" % (i + 1), func(): pass, false)
-		b.custom_minimum_size = Vector2(250, 52)
-		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		grid.add_child(b)
-		if i < game.unlocked:
-			_level_buttons.append(b)
-
-	_elevator_box.add_child(HSeparator.new())
-	_elevator_box.add_child(_make_button("Relic collection  (C)", toggle_collection))
-	_elevator_box.add_child(_make_button("Close  (E / Esc)", close_menus))
-
-	_elevator.reset_size()
-	var buttons := _buttons_in(_elevator_box)
-	var enabled := buttons.filter(func(b): return not b.disabled)
-	if focus_index < buttons.size() and not buttons[focus_index].disabled:
-		buttons[focus_index].grab_focus()
-	elif not enabled.is_empty():
-		enabled[0].grab_focus()
+func _build_status() -> void:
+	var panel := _make_panel(Vector2(16, 16))
+	panel.custom_minimum_size = Vector2(200, 0)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 2)
+	panel.add_child(box)
+	_day_label = _make_label("", 22, GOLD)
+	box.add_child(_day_label)
+	_place_label = _make_label("", 15, DIM_COLOR)
+	box.add_child(_place_label)
+	_clock_label = _make_label("", 30, GOLD)
+	box.add_child(_clock_label)
+	_clock_label.hide()
 
 
-func _level_button_text(i: int) -> String:
-	var name_line := "Level %d: %s" % [i + 1, Data.LEVELS[i]["name"]]
-	if i == game.current_level:
-		return name_line + "\n(you are here)"
-	var remaining: float = game.regen_remaining(i)
-	if remaining > 0.0:
-		return name_line + "\nregrowing... %ds" % ceili(remaining)
-	return name_line + "\nfully regrown"
+func _build_backpack() -> void:
+	var panel := _make_panel(Vector2(1044, 16))
+	panel.custom_minimum_size = Vector2(220, 0)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	panel.add_child(box)
+	box.add_child(_make_label("BACKPACK", 13, BORDER_COLOR.lightened(0.3)))
+	_inv_box = VBoxContainer.new()
+	_inv_box.add_theme_constant_override("separation", 3)
+	box.add_child(_inv_box)
 
 
-func _buttons_in(node: Node) -> Array:
-	var result: Array = []
-	for child in node.get_children():
-		if child is Button:
-			result.append(child)
-		result.append_array(_buttons_in(child))
-	return result
-
-
-# --- Relic collection -------------------------------------------------------
-
-func _rebuild_collection() -> void:
-	_clear(_collection_box)
-	_collection_box.add_child(_make_label("RELIC COLLECTION", 22, GOLD))
-	_collection_box.add_child(_make_label(
-		"Relics hide in sparkling blocks. Every new relic adds +5% to the value of all ore you sell.", 15, DIM_COLOR.lightened(0.2)))
-	var grid := GridContainer.new()
-	grid.columns = 4
-	grid.add_theme_constant_override("h_separation", 10)
-	grid.add_theme_constant_override("v_separation", 10)
-	_collection_box.add_child(grid)
-	for i in Data.COLLECTIBLES.size():
-		var info: Dictionary = Data.COLLECTIBLES[i]
-		var count := int(game.collection.get(i, 0))
-		var found := count > 0
-		var card := PanelContainer.new()
-		var style := StyleBoxFlat.new()
-		style.bg_color = Color(0.14, 0.12, 0.11) if found else Color(0.1, 0.09, 0.09)
-		style.border_color = Color(info["color"], 0.6) if found else Color(0.25, 0.22, 0.2)
-		style.set_border_width_all(1)
-		style.set_corner_radius_all(6)
-		style.set_content_margin_all(8)
-		card.add_theme_stylebox_override("panel", style)
-		card.custom_minimum_size = Vector2(225, 0)
-		card.tooltip_text = info["desc"] if found else "Not found yet. Look for sparkles on level %d." % (int(info["level"]) + 1)
+func _rebuild_backpack() -> void:
+	_clear(_inv_box)
+	var any := false
+	for id in Data.ITEM_ORDER:
+		var n: int = game.count(id)
+		if n <= 0:
+			continue
+		any = true
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
-		card.add_child(row)
+		row.add_child(_make_icon(id))
+		var name_label := _make_label(Data.ITEMS[id]["name"], 15)
+		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(name_label)
+		row.add_child(_make_label(str(n), 15, GOLD))
+		_inv_box.add_child(row)
+	if not any:
+		_inv_box.add_child(_make_label("Empty", 14, DIM_COLOR))
+
+
+func _rebuild_hotbar() -> void:
+	_clear(_hotbar)
+	for i in game.tools.size():
+		var tool: Dictionary = Data.TOOLS[game.tools[i]]
+		var slot := PanelContainer.new()
+		var style := StyleBoxFlat.new()
+		style.bg_color = PANEL_COLOR
+		style.border_color = GOLD if i == game.equipped else BORDER_COLOR.darkened(0.3)
+		style.set_border_width_all(3 if i == game.equipped else 2)
+		style.set_corner_radius_all(6)
+		slot.add_theme_stylebox_override("panel", style)
+		slot.custom_minimum_size = Vector2(56, 56)
+		slot.gui_input.connect(_on_slot_input.bind(i))
 		var icon := Control.new()
-		icon.custom_minimum_size = Vector2(44, 44)
 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		icon.draw.connect(_draw_relic_icon.bind(icon, info["color"], found, int(info["weight"]) == 1))
-		row.add_child(icon)
-		var text := VBoxContainer.new()
-		text.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		row.add_child(text)
-		var rarity := "Rare" if int(info["weight"]) == 1 else "Uncommon"
-		text.add_child(_make_label(info["name"] if found else "???", 15, TEXT_COLOR if found else DIM_COLOR))
-		text.add_child(_make_label("Level %d  -  %s" % [int(info["level"]) + 1, rarity], 13, DIM_COLOR))
-		if found:
-			text.add_child(_make_label("Found x%d" % count, 13, GOLD))
-		grid.add_child(card)
-	_collection_box.add_child(_make_button("Close  (C / Esc)", close_menus))
-	_collection.reset_size()
+		icon.draw.connect(_draw_tool_icon.bind(icon, tool))
+		slot.add_child(icon)
+		var key := _make_label(str(i + 1), 12, DIM_COLOR)
+		key.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		slot.add_child(key)
+		_hotbar.add_child(slot)
+	var n: int = game.tools.size()
+	_hotbar.position = Vector2(VIEW.x / 2.0 - (n * 64 - 8) / 2.0, 640)
+	var current: Dictionary = game.equipped_tool()
+	_tool_label.text = current.get("name", "")
 
 
-func _draw_relic_icon(icon: Control, color: Color, found: bool, rare: bool) -> void:
-	var c := icon.size / 2.0
-	if not found:
-		icon.draw_circle(c, 18, Color(0.17, 0.15, 0.15))
-		icon.draw_string(ThemeDB.fallback_font, c + Vector2(-22, 8), "?", HORIZONTAL_ALIGNMENT_CENTER, 44, 22, DIM_COLOR)
-		return
-	icon.draw_circle(c, 20, Color(color, 0.18))
-	var s := 14.0
-	var top := c + Vector2(0, -s)
-	var right := c + Vector2(s * 0.8, 0)
-	icon.draw_colored_polygon(PackedVector2Array([top, right, c + Vector2(0, s), c + Vector2(-s * 0.8, 0)]), color)
-	icon.draw_colored_polygon(PackedVector2Array([top, right, c]), color.lightened(0.5))
-	if rare:
-		icon.draw_arc(c, 20, 0, TAU, 32, GOLD, 2.0)
+func _draw_tool_icon(icon: Control, tool: Dictionary) -> void:
+	Icons.draw_tool(icon, tool, icon.size / 2.0 + Vector2(-9, 9), -PI / 4.0, 22.0)
+
+
+func _on_slot_input(event: InputEvent, index: int) -> void:
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		game.equip(index)
+
+
+func _rebuild_build() -> void:
+	_clear(_build_box)
+	for id in Data.BUILD_ORDER:
+		var info: Dictionary = Data.BUILDABLES[id]
+		var affordable: bool = game.has_items(info["cost"])
+		var b := _make_button("%s\n%s" % [info["name"], Data.cost_text(info["cost"])],
+			Callable(game, "select_build").bind(id), affordable or game.build_kind == id)
+		b.toggle_mode = true
+		b.button_pressed = game.build_kind == id
+		b.custom_minimum_size = Vector2(118, 50)
+		b.focus_mode = Control.FOCUS_NONE
+		_build_box.add_child(b)
+	_build_panel.reset_size()
+	_build_panel.position = Vector2((VIEW.x - _build_panel.size.x) / 2.0, 500)
+
+
+# --- Menus ------------------------------------------------------------------------------
+
+func _rebuild_menu() -> void:
+	_clear(_menu_box)
+	match _menu_kind:
+		"door":
+			_menu_door()
+		"forge":
+			_menu_forge()
+		"workbench":
+			_menu_workbench()
+		"summary":
+			_menu_summary()
+	_menu.reset_size()
+	_menu.position = ((VIEW - _menu.get_combined_minimum_size()) / 2.0).floor()
+	call_deferred("_recenter_menu")
+
+
+func _recenter_menu() -> void:
+	_menu.reset_size()
+	_menu.position = ((VIEW - _menu.size) / 2.0).floor()
+
+
+func _title(text: String) -> void:
+	_menu_box.add_child(_make_label(text, 22, GOLD))
+
+
+func _text(text: String, color := TEXT_COLOR, font_size := 15) -> void:
+	var l := _make_label(text, font_size, color)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.custom_minimum_size = Vector2(436, 0)
+	_menu_box.add_child(l)
+
+
+func _section(text: String) -> void:
+	_menu_box.add_child(HSeparator.new())
+	_menu_box.add_child(_make_label(text, 13, BORDER_COLOR.lightened(0.3)))
+
+
+func _menu_door() -> void:
+	_title("Day %d" % game.day)
+	_text("Where are you heading today? A trip lasts 5 minutes, then you walk back home. Time stands still while you're inside.", DIM_COLOR)
+	_menu_box.add_child(_make_button("The Forest   -   chop trees for wood", Callable(game, "start_run").bind("forest")))
+	_menu_box.add_child(_make_button("The Mine   -   rocks, coal and ore veins", Callable(game, "start_run").bind("mine")))
+	_menu_box.add_child(_make_button("Stay inside", close_menus))
+
+
+func _menu_forge() -> void:
+	_title("Forge")
+	if game.forge_lit:
+		_text("The fire is roaring. It goes out when you leave the house.", GOOD)
+	else:
+		_text("The forge is cold. Light it with coal to smelt ore and forge tools.", DIM_COLOR)
+		_menu_box.add_child(_make_button("Light the forge  (%s)" % Data.cost_text(Data.FORGE_LIGHT_COST),
+			Callable(game, "light_forge"), game.has_items(Data.FORGE_LIGHT_COST)))
+
+	_section("SMELT  (2 ore makes 1 bar)")
+	for i in Data.SMELTING.size():
+		var r: Dictionary = Data.SMELTING[i]
+		var have: int = game.count(r["input"])
+		var can: bool = game.forge_lit and have >= int(r["amount"])
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		row.add_child(_make_icon(r["input"]))
+		var label := _make_label("%s  (%d)" % [Data.ITEMS[r["input"]]["name"], have], 15, TEXT_COLOR if have > 0 else DIM_COLOR)
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(label)
+		row.add_child(_make_button("Smelt 1", Callable(game, "smelt").bind(i, 1), can))
+		row.add_child(_make_button("Smelt all", Callable(game, "smelt").bind(i, 999), can))
+		_menu_box.add_child(row)
+
+	_section("FORGE TOOLS  (a handle from the workbench + 3 bars)")
+	for kind in Data.TOOL_LINES:
+		var next_id: String = game.next_tool(kind)
+		if next_id == "":
+			_text("Your %s can't get any better." % kind, DIM_COLOR)
+			continue
+		var tool: Dictionary = Data.TOOLS[next_id]
+		_menu_box.add_child(_make_button("Forge %s  (%s)" % [tool["name"], Data.cost_text(tool["recipe"])],
+			Callable(game, "forge_tool").bind(next_id), game.forge_lit and game.has_items(tool["recipe"])))
+	_menu_box.add_child(HSeparator.new())
+	_menu_box.add_child(_make_button("Close  (Esc)", close_menus))
+
+
+func _menu_workbench() -> void:
+	_title("Workbench")
+	_text("Carve wood into handles for new tools. Furniture is built with B, anywhere in the house.", DIM_COLOR)
+	var cost := Data.cost_text(Data.HANDLE_RECIPE)
+	_menu_box.add_child(_make_button("Carve 1 tool handle  (%s)" % cost,
+		Callable(game, "craft_handle").bind(1), game.has_items(Data.HANDLE_RECIPE)))
+	_menu_box.add_child(_make_button("Carve 5 tool handles",
+		Callable(game, "craft_handle").bind(5), game.count("wood") >= 10))
+	_menu_box.add_child(HSeparator.new())
+	_menu_box.add_child(_make_button("Close  (Esc)", close_menus))
+
+
+func _menu_summary() -> void:
+	_title("Day %d is over" % int(_menu_data.get("day", 0)))
+	if _menu_data.get("early", false):
+		_text("You headed home early.", DIM_COLOR)
+	else:
+		_text("The light is gone. You walk back home, tired but happy.", DIM_COLOR)
+	var gains: Dictionary = _menu_data.get("gains", {})
+	if gains.is_empty():
+		_text("You came back empty-handed.", DIM_COLOR)
+	else:
+		_section("YOU BROUGHT BACK")
+		for id in Data.ITEM_ORDER:
+			if not gains.has(id):
+				continue
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 8)
+			row.add_child(_make_icon(id))
+			row.add_child(_make_label("%d  %s" % [gains[id], Data.ITEMS[id]["name"]], 15))
+			_menu_box.add_child(row)
+	_menu_box.add_child(HSeparator.new())
+	_menu_box.add_child(_make_button("Continue", close_menus))
