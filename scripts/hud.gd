@@ -259,6 +259,11 @@ func _build_overlay(root: Control) -> void:
 	_overlay_box = VBoxContainer.new()
 	_overlay_box.add_theme_constant_override("separation", 10)
 	center.add_child(_overlay_box)
+	var version := _label("v" + str(ProjectSettings.get_setting("application/config/version", "dev")), 14, DIM)
+	version.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 12)
+	version.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	version.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_overlay.add_child(version)
 
 
 # --- Updates --------------------------------------------------------------------------
