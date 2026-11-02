@@ -30,12 +30,12 @@ const GRIPS := [
 	{"name": "Balanced grip", "cost": 260, "speed": 1.75},
 	{"name": "Master's grip", "cost": 650, "speed": 2.25},
 ]
-# Radius of the ball of ground each swing clears, in cubes.
+# Radius of the dent each blow leaves in the ground, in cubes.
 const SIZES := [
-	{"name": "Small head", "cost": 0, "radius": 4.0},
-	{"name": "Wide head", "cost": 110, "radius": 5.2},
-	{"name": "Broad head", "cost": 320, "radius": 6.6},
-	{"name": "Huge head", "cost": 800, "radius": 8.4},
+	{"name": "Small head", "cost": 0, "radius": 3.0},
+	{"name": "Wide head", "cost": 110, "radius": 3.9},
+	{"name": "Broad head", "cost": 320, "radius": 4.9},
+	{"name": "Huge head", "cost": 800, "radius": 6.2},
 ]
 const WORKSHOP := {"grip": GRIPS, "size": SIZES}
 

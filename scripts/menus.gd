@@ -2,7 +2,6 @@ extends CanvasLayer
 # The full-screen menus: loading, title, pause, the treasure journal, the workbench, your pack,
 # chests, the anvil, the map table, and coming round after a knockout.
 
-const Blocks := preload("res://scripts/blocks.gd")
 const Treasures := preload("res://scripts/treasures.gd")
 const Items := preload("res://scripts/items.gd")
 const Catalog := preload("res://scripts/catalog.gd")
@@ -17,9 +16,9 @@ const SHOP_TABS := [["gear", "Gear"], ["supplies", "Supplies"], ["workshop", "Wo
 const COMPASS := ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"]
 const CONTROLS := [
 	"WASD move  ·  Space jump  ·  Shift sprint  ·  Ctrl crouch  ·  Mouse look",
-	"1-6 or wheel: pickaxe, leveller, sword, mace, bow, explosives  ·  R changes the material or explosive",
-	"Left click use  ·  Right click place blocks, or raise your shield",
-	"E use  ·  G move furniture  ·  I pack  ·  Tab journal  ·  F detector  ·  Esc pause",
+	"1-6 or wheel: pickaxe, leveller, sword, mace, bow, explosives  ·  R changes the explosive",
+	"Left click use  ·  Right click raises your shield  ·  You duck and crawl through tight gaps on your own",
+	"E use or pick up  ·  G move furniture  ·  I pack  ·  Tab journal  ·  F detector  ·  Esc pause",
 ]
 
 var game
@@ -384,14 +383,9 @@ func _inventory() -> void:
 		details.add_child(_button("Equip", Callable(self, "_equip_selected"), Vector2(160, 36), 16))
 	elif where == "equipped" and _selected["index"] != "pickaxe" and not _selected_item().is_empty():
 		details.add_child(_button("Put in pack", Callable(self, "_unequip_selected"), Vector2(160, 36), 16))
-	# Supplies, materials and furniture waiting to be placed.
+	# Supplies and furniture waiting to be placed.
 	var supplies := "Arrows: %d   ·   Dynamite: %d   ·   Blasting charges: %d" % [game.supplies["arrows"], game.supplies["dynamite"], game.supplies["charge"]]
 	_box.add_child(_centered(_label(supplies, 15)))
-	var mats: Array[String] = []
-	for b: int in Blocks.MATERIALS:
-		if game.count(b) > 0:
-			mats.append("%s %s" % [Blocks.NAMES[b], thousands(game.count(b))])
-	_box.add_child(_centered(_wrapped(_label("Materials: " + ("  ·  ".join(mats) if not mats.is_empty() else "none yet"), 14, DIM), 900)))
 	if not game.unplaced.is_empty():
 		var line := HBoxContainer.new()
 		line.add_theme_constant_override("separation", 8)
@@ -713,9 +707,9 @@ func _shop_workshop(list: VBoxContainer) -> void:
 	var sizes: Array = Catalog.SIZES
 	var size: int = game.workshop["size"]
 	if size + 1 < sizes.size():
-		list.add_child(_row(sizes[size + 1]["name"], "Now: %s, clears %.1f m across and levels %.1f m squares. Next: %.1f m." % [sizes[size]["name"], sizes[size]["radius"] * 0.25, (6 + 2 * size) * 0.25, sizes[size + 1]["radius"] * 0.25], sizes[size + 1]["cost"], Callable(game, "buy_workshop").bind("size"), "Upgrade"))
+		list.add_child(_row(sizes[size + 1]["name"], "Now: %s, every blow dents the ground %.1f m across, and the leveller flattens %.1f m squares. Next: %.1f m." % [sizes[size]["name"], sizes[size]["radius"] * 0.25, (6 + 2 * size) * 0.25, sizes[size + 1]["radius"] * 0.25], sizes[size + 1]["cost"], Callable(game, "buy_workshop").bind("size"), "Upgrade"))
 	else:
-		list.add_child(_row(sizes[size]["name"], "Clears %.1f m across." % (sizes[size]["radius"] * 0.25), -1, Callable(), "Maxed"))
+		list.add_child(_row(sizes[size]["name"], "Every blow dents the ground %.1f m across." % (sizes[size]["radius"] * 0.25), -1, Callable(), "Maxed"))
 
 
 func _shop_house(list: VBoxContainer) -> void:

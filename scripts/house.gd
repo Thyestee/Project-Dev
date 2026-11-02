@@ -146,14 +146,21 @@ static func _doorframe(w) -> void:
 
 
 # A domed chamber at the foot of the stairs, with two lanterns on posts. Its walls are plain
-# ground: this is where the digging starts.
+# ground, smooth and flat-floored: this is where the digging starts.
 static func _dig_site(w) -> void:
 	var s := SITE_FLOOR
-	for z in range(int(SITE.y - SITE_RADIUS.y) - 1, int(SITE.y + SITE_RADIUS.y) + 2):
-		for x in range(int(SITE.x - SITE_RADIUS.x) - 1, int(SITE.x + SITE_RADIUS.x) + 2):
+	var r := minf(SITE_RADIUS.x, SITE_RADIUS.y)
+	for z in range(int(SITE.y - SITE_RADIUS.y) - 3, int(SITE.y + SITE_RADIUS.y) + 4):
+		for x in range(int(SITE.x - SITE_RADIUS.x) - 3, int(SITE.x + SITE_RADIUS.x) + 4):
 			var e := pow((x + 0.5 - SITE.x) / SITE_RADIUS.x, 2.0) + pow((z + 0.5 - SITE.y) / SITE_RADIUS.y, 2.0)
-			if e <= 1.0:
-				w.fill(Vector3i(x, s, z), Vector3i(x, s + 16 + int(8.0 * (1.0 - e)), z), Blocks.AIR)
+			var wall := (1.0 - sqrt(e)) * r
+			var roof := 17.0 + 8.0 * (1.0 - e)
+			for y in range(s - 1, s + 27):
+				# How far inside the chamber the cell's centre is, in cells: from the floor, the
+				# wall or the roof, whichever is nearest.
+				var up := y + 0.5 - s
+				var inside := minf(wall, minf(up, roof - up))
+				w.soften(x, y, z, int(clampf(127.5 - inside * 127.5, 0.0, 254.0)))
 	w.fill(Vector3i(DOOR_X - 5, s, int(SITE.y)), Vector3i(DOOR_X + 4, s + 19, STAIRS_END_Z - 1), Blocks.AIR)
 	for x: int in [int(SITE.x) - 19, int(SITE.x) + 17]:
 		w.fill(Vector3i(x, s, int(SITE.y) - 1), Vector3i(x + 1, s + 13, int(SITE.y)), Blocks.BEAM)

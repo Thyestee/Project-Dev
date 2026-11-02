@@ -1,8 +1,7 @@
 extends Node3D
-# Short-lived things to look at: flying debris, sparks, dust, blasts, lightning and the damage
-# numbers that pop out of whatever you hit.
-
-const Models := preload("res://scripts/models.gd")
+# Short-lived things to look at: flying chips, sparks, dust, blasts, lightning and the damage
+# numbers that pop out of whatever you hit. Chips are little triangular shards; dust and smoke
+# are eight-sided puffs.
 
 const BAR_SHADER := """
 shader_type spatial;
@@ -23,9 +22,16 @@ void fragment() {
 }
 """
 
+# A chip: a lopsided pyramid of four triangles. A puff: eight triangles round a point.
+const SHARD := [Vector3(0.0, 0.62, 0.0), Vector3(-0.55, -0.3, 0.38), Vector3(0.6, -0.25, 0.3), Vector3(0.05, -0.32, -0.62)]
+const SHARD_FACES := [[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]]
+const PUFF := [Vector3(0.5, 0, 0), Vector3(-0.5, 0, 0), Vector3(0, 0.5, 0), Vector3(0, -0.5, 0), Vector3(0, 0, 0.5), Vector3(0, 0, -0.5)]
+const PUFF_FACES := [[0, 2, 4], [4, 2, 1], [1, 2, 5], [5, 2, 0], [0, 4, 3], [4, 1, 3], [1, 5, 3], [5, 0, 3]]
+
 var material: Material        # the world's, so your lamp and the lanterns light the bits too
-var _cube: ArrayMesh
-var _glow_cube: ArrayMesh
+var _shard: ArrayMesh
+var _glow_shard: ArrayMesh
+var _puff: ArrayMesh
 var _shrink: Curve
 var _numbers: Array = []      # {"label", "time", "life"}
 var _bolts: Array = []        # {"node", "time"}
@@ -34,8 +40,9 @@ var bar_material: ShaderMaterial
 
 
 func _ready() -> void:
-	_cube = Models.build([[Vector3.ZERO, Vector3.ONE, Color.WHITE]])
-	_glow_cube = Models.build([[Vector3.ZERO, Vector3.ONE, Color.WHITE, 1.6]])
+	_shard = _make_solid(SHARD, SHARD_FACES, 0.0)
+	_glow_shard = _make_solid(SHARD, SHARD_FACES, 1.6)
+	_puff = _make_solid(PUFF, PUFF_FACES, 0.0)
 	_shrink = Curve.new()
 	_shrink.add_point(Vector2(0.0, 1.0))
 	_shrink.add_point(Vector2(0.65, 0.85))
@@ -71,9 +78,9 @@ func _process(delta: float) -> void:
 		k -= 1
 
 
-# A spray of little cubes. Glowing ones (sparks, fire) shine in the dark.
-func burst(pos: Vector3, color: Color, amount := 14, speed := 2.5, size := 0.05, dir := Vector3.UP, spread := 70.0, gravity := 12.0, life := 0.7, glow := false) -> void:
-	var p := _particles(glow)
+# A spray of little shards (or puffs). Glowing ones (sparks, fire) shine in the dark.
+func burst(pos: Vector3, color: Color, amount := 14, speed := 2.5, size := 0.05, dir := Vector3.UP, spread := 70.0, gravity := 12.0, life := 0.7, glow := false, puff := false) -> void:
+	var p := _particles(glow, puff)
 	p.amount = amount
 	p.lifetime = life
 	p.one_shot = true
@@ -95,9 +102,35 @@ func burst(pos: Vector3, color: Color, amount := 14, speed := 2.5, size := 0.05,
 	p.finished.connect(p.queue_free)
 
 
-func _particles(glow: bool) -> CPUParticles3D:
+# A solid about a unit across made of triangles, lit from above like everything else.
+static func _make_solid(corners: Array, faces: Array, glow: float) -> ArrayMesh:
+	var middle := Vector3.ZERO
+	for c: Vector3 in corners:
+		middle += c / corners.size()
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for face: Array in faces:
+		var a: Vector3 = corners[face[0]]
+		var b: Vector3 = corners[face[1]]
+		var c: Vector3 = corners[face[2]]
+		# Clockwise seen from outside, as Godot draws front faces.
+		if (b - a).cross(c - a).dot((a + b + c) / 3.0 - middle) > 0.0:
+			var swap := b
+			b = c
+			c = swap
+		var n := (c - a).cross(b - a).normalized()
+		var shade := 0.55 + 0.45 * (n.y * 0.5 + 0.5)
+		for v: Vector3 in [a, b, c]:
+			st.set_color(Color(shade, shade, shade))
+			st.set_normal(n)
+			st.set_uv2(Vector2(glow, -1.0))
+			st.add_vertex(v)
+	return st.commit()
+
+
+func _particles(glow: bool, puff := false) -> CPUParticles3D:
 	var p := CPUParticles3D.new()
-	p.mesh = _glow_cube if glow else _cube
+	p.mesh = _puff if puff else (_glow_shard if glow else _shard)
 	p.material_override = material
 	return p
 
@@ -108,7 +141,7 @@ func debris(pos: Vector3, normal: Vector3, color: Color, amount := 12) -> void:
 
 
 func dust(pos: Vector3, color := Color(0.5, 0.45, 0.4)) -> void:
-	burst(pos, color, 6, 0.5, 0.045, Vector3.UP, 80.0, -0.5, 0.8)
+	burst(pos, color, 6, 0.5, 0.045, Vector3.UP, 80.0, -0.5, 0.8, false, true)
 
 
 func sparks(pos: Vector3, normal: Vector3) -> void:
@@ -118,7 +151,7 @@ func sparks(pos: Vector3, normal: Vector3) -> void:
 func explosion(pos: Vector3, radius: float, color: Color) -> void:
 	burst(pos, Color(1.0, 0.7, 0.3), 40, radius * 7.0, 0.08, Vector3.UP, 180.0, 2.0, 0.45, true)
 	burst(pos, Color(1.0, 0.42, 0.12), 30, radius * 5.0, 0.11, Vector3.UP, 180.0, 1.0, 0.6, true)
-	burst(pos, Color(0.25, 0.23, 0.22), 26, radius * 1.6, 0.22, Vector3.UP, 120.0, -1.2, 1.8)
+	burst(pos, Color(0.25, 0.23, 0.22), 26, radius * 1.6, 0.2, Vector3.UP, 120.0, -1.2, 1.8, false, true)
 	burst(pos, color, 36, radius * 6.0, 0.06, Vector3.UP, 160.0, 14.0, 1.1)
 
 
@@ -147,7 +180,7 @@ func lightning(to: Vector3) -> void:
 
 # A ring of dust running out along the floor.
 func shockwave(pos: Vector3, radius: float) -> void:
-	var p := _particles(false)
+	var p := _particles(false, true)
 	p.amount = 40
 	p.lifetime = 0.6
 	p.one_shot = true

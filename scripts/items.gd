@@ -54,7 +54,7 @@ const AFFIXES := {
 	"dig_speed": {"text": "+%s%% dig speed", "min": 8, "max": 20, "kinds": ["pickaxe"]},
 	"dig_size": {"text": "+%s%% dig size", "min": 8, "max": 20, "kinds": ["pickaxe"]},
 	"prospector": {"text": "+%s%% coins from treasure", "min": 10, "max": 30, "kinds": ["pickaxe"]},
-	"double": {"text": "%s%% chance of double materials", "min": 10, "max": 30, "kinds": ["pickaxe"]},
+	"double": {"text": "%s%% chance of a double-strength blow", "min": 10, "max": 30, "kinds": ["pickaxe"]},
 	"sense": {"text": "+%s m metal detector range", "min": 2, "max": 6, "kinds": ["pickaxe"]},
 	"guard": {"text": "+%s%% block", "min": 4, "max": 10, "kinds": ["shield"]},
 	"thorns": {"text": "Blocked blows deal %s%% back to the attacker", "min": 20, "max": 50, "kinds": ["shield"]},

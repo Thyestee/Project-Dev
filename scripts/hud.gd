@@ -2,7 +2,6 @@ extends CanvasLayer
 # Everything on screen while you play: stats, health and stamina, the detector readout, the tool
 # hotbar, messages, the boss's health and the compass to a hidden room you're tracking.
 
-const Blocks := preload("res://scripts/blocks.gd")
 const Treasures := preload("res://scripts/treasures.gd")
 const Items := preload("res://scripts/items.gd")
 const Catalog := preload("res://scripts/catalog.gd")
@@ -392,12 +391,11 @@ func refresh() -> void:
 func _slot_info() -> String:
 	var player = game.player
 	var kind: String = PlayerScript.SLOTS[player.slot]
-	var material_text := "Right click places %s ×%d  ·  R to change" % [String(Blocks.NAMES[game.selected_material()]).to_lower(), game.count(game.selected_material())]
 	match kind:
 		"pickaxe":
-			return "%s  ·  %s" % [Items.title(game.equipped["pickaxe"]), material_text]
+			return "%s  ·  hold to dig  ·  E picks up what you find" % Items.title(game.equipped["pickaxe"])
 		"leveler":
-			return "Leveller: click a surface to make it flat  ·  fills holes with %s ×%d  ·  R to change" % [String(Blocks.NAMES[game.selected_material()]).to_lower(), game.count(game.selected_material())]
+			return "Leveller: click a floor, wall or ceiling to make it flat"
 		"sword", "mace", "bow":
 			var item: Dictionary = game.equipped[kind]
 			if item.is_empty():

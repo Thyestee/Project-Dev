@@ -537,8 +537,7 @@ func _make(type: String, depth: float) -> Enemy:
 	e.coins = roundi(float(e.def["coins"]) * mult)
 	e.body = Body.new()
 	e.body.world = game.world
-	e.body.half_width = e.def["half"]
-	e.body.height = e.def["height"]
+	e.body.set_size(e.def["half"], e.def["height"])
 	e.node = Node3D.new()
 	add_child(e.node)
 	match type:

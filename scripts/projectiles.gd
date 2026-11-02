@@ -184,7 +184,7 @@ func _update_blade(p: Dictionary, delta: float) -> bool:
 	return float(p["life"]) <= 0.0
 
 
-# Bounces off the cubes, losing speed, until the fuse burns down.
+# Bounces off the ground and walls, losing speed, until the fuse burns down.
 func _update_bomb(p: Dictionary, delta: float) -> bool:
 	p["fuse"] = float(p["fuse"]) - delta
 	p["hiss"] = float(p["hiss"]) - delta

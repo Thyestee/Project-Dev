@@ -1,6 +1,7 @@
 extends RefCounted
 # Block ids and their properties. Every per-block table is indexed by block id.
-# Blocks are small cubes, World.VOXEL metres on a side.
+# Everything from DIRT to BEDROCK is ground: one smooth surface that wears away a little with
+# every blow. Everything after BEDROCK is built: crisp cubes, World.VOXEL metres on a side.
 
 const AIR := 0
 const DIRT := 1
@@ -131,16 +132,12 @@ const DEFS := [
 	["Urn", Color(0.55, 0.35, 0.22), 0, 0.2, 0.0, 0.12],
 ]
 
-# Blocks you can place, in the order R cycles through them. Digging puts these in your pack.
-const MATERIALS := [DIRT, SAND, CLAY, GRAVEL, STONE, SLATE, DEEPROCK, VAULT_BRICK]
-
 static var NAMES: Array = []
 static var COLORS: Array = []
 static var TIER := PackedInt32Array()
 static var DIG_TIME := PackedFloat32Array()
 static var GLOW := PackedFloat32Array()
 static var JITTER := PackedFloat32Array()
-static var DROP := PackedInt32Array()     # what digging the block puts in your pack (0: nothing)
 
 
 static func _static_init() -> void:
@@ -151,11 +148,10 @@ static func _static_init() -> void:
 		DIG_TIME.append(row[3])
 		GLOW.append(row[4])
 		JITTER.append(row[5])
-	DROP.resize(DEFS.size())
-	for b in range(DIRT, DEEPROCK + 1):
-		DROP[b] = b
-	for b: int in [VAULT_BRICK, VAULT_MOSS, VAULT_FLOOR, VAULT_TILE, VAULT_PILLAR]:
-		DROP[b] = VAULT_BRICK
+
+
+static func is_ground(b: int) -> bool:
+	return b >= DIRT and b <= BEDROCK
 
 
 static func is_treasure(b: int) -> bool:

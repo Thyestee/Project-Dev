@@ -19,13 +19,14 @@ const Enemies := preload("res://scripts/enemies.gd")
 const Projectiles := preload("res://scripts/projectiles.gd")
 
 const SAVE_PATH := "user://deep_finds_save.json"
-const SAVE_VERSION := 3
+const SAVE_VERSION := 4
 const DETECTOR_RANGE := 14.0
 const AUTOSAVE_SECONDS := 30.0
 const BAG_SIZE := 16
 const RESTED_SECONDS := 600.0
 const LEVEL_CUT := 12
 const LEVEL_FILL := 8
+const DIG_POWER := 560.0      # density a pickaxe blow takes off the middle of its dent (see World.dent)
 
 var world
 var player
@@ -37,7 +38,6 @@ var enemies
 var projectiles
 var env: Environment
 var state := "starting"   # starting, loading, title, playing, menu, paused, confirm, dead
-var materials := {}       # block id -> count
 var found := {}           # treasure type -> how many you've ever found
 var coins := 0
 var bag: Array = []       # gear in your pack
@@ -51,7 +51,6 @@ var unplaced: Array = []      # furniture you've bought or picked up but not put
 var storage := {}             # furniture id (as text) -> the gear inside
 var next_furniture_id := 1
 var vault_state: Array = []   # per hidden room: {"opened", "dead": [guard numbers], "chests": {number: [gear]}}
-var material_index := 0
 var explosive_index := 0
 var detector_on := true
 var rested := 0.0
@@ -288,14 +287,6 @@ func shake(amount: float, at: Vector3) -> void:
 	player.shake(amount * clampf(1.3 - player.position.distance_to(at) / 14.0, 0.0, 1.0))
 
 
-func count(b: int) -> int:
-	return materials.get(b, 0)
-
-
-func selected_material() -> int:
-	return Blocks.MATERIALS[material_index]
-
-
 func selected_explosive() -> String:
 	return Catalog.EXPLOSIVE_ORDER[explosive_index]
 
@@ -312,22 +303,15 @@ func select_slot(i: int) -> void:
 	hud.refresh()
 
 
-# R: the next material to place, the next kind of explosive, or a turn of the furniture you're placing.
+# R: the next kind of explosive, or a turn of the furniture you're placing.
 func cycle() -> void:
 	if not player.placing.is_empty():
 		player.turn_placing()
 		return
-	match Player.SLOTS[player.slot]:
-		"bomb":
-			explosive_index = (explosive_index + 1) % Catalog.EXPLOSIVE_ORDER.size()
-			player.refresh_explosive()
-		_:
-			for step in range(1, Blocks.MATERIALS.size() + 1):
-				var i := (material_index + step) % Blocks.MATERIALS.size()
-				if count(Blocks.MATERIALS[i]) > 0 or step == Blocks.MATERIALS.size():
-					material_index = i
-					break
-	hud.refresh()
+	if Player.SLOTS[player.slot] == "bomb":
+		explosive_index = (explosive_index + 1) % Catalog.EXPLOSIVE_ORDER.size()
+		player.refresh_explosive()
+		hud.refresh()
 
 
 # Bonuses from every piece of equipped gear: vitality, regen, swift and sense.
@@ -356,6 +340,11 @@ func furniture_at(c: Vector3i) -> Dictionary:
 
 func level_half() -> int:
 	return 6 + 2 * int(workshop["size"])
+
+
+# Radius in cubes of the dent each pickaxe blow leaves.
+func dig_radius() -> float:
+	return float(Catalog.SIZES[workshop["size"]]["radius"]) * Items.dig_size(equipped["pickaxe"])
 
 
 # --- What's under the crosshair, and E ------------------------------------------------------
@@ -387,9 +376,9 @@ func show_target() -> void:
 			empty = contents != null and (contents as Array).is_empty()
 		hud.set_target("An empty chest" if empty else "An old chest  ·  E to open it", Hud.GOLD)
 	elif b == Blocks.RELIC:
-		hud.set_target("Something glints in the soil!", Hud.GOLD)
+		hud.set_target("Something glints in the soil  ·  E to dig it out", Hud.GOLD)
 	elif b == Blocks.CHEST or b == Blocks.CHEST_TRIM:
-		hud.set_target("A buried chest!", Hud.GOLD)
+		hud.set_target("A buried chest  ·  E to dig it up", Hud.GOLD)
 	elif Blocks.TIER[b] > Items.hardness(equipped["pickaxe"]):
 		hud.set_target("%s  ·  needs %s pickaxe" % [Blocks.NAMES[b], _article(Items.TIER_NAMES["pickaxe"][Blocks.TIER[b]])], Color(1.0, 0.55, 0.45))
 	else:
@@ -424,6 +413,10 @@ func interact() -> void:
 			var k := Vaults.chest_at(world.vaults[v], c)
 			if k >= 0:
 				_open_loot_chest(v, k)
+	elif Blocks.is_treasure(t["block"]):
+		var found_here: int = world.treasure_at(c)
+		if found_here >= 0:
+			_dig_out(found_here)
 
 
 func sleep() -> void:
@@ -436,7 +429,7 @@ func sleep() -> void:
 	save_game()
 
 
-# --- Digging, levelling and placing -----------------------------------------------------------
+# --- Digging and levelling ---------------------------------------------------------------------
 
 # Seconds per swing at block b: faster with a better grip, a faster pickaxe, and a pickaxe
 # stronger than the rock needs.
@@ -447,21 +440,30 @@ func swing_time(b: int) -> float:
 	return base * pow(0.85, spare) / (float(Catalog.GRIPS[workshop["grip"]]["speed"]) * Items.dig_speed(item))
 
 
+# The pickaxe lands: it wears a dent in the ground around where you aimed. Treasure it uncovers
+# stays in the ground until you pick it up (E).
 func on_swing_hit(target: Dictionary) -> void:
 	var cell: Vector3i = target["cell"]
 	var b: int = target["block"]
 	var tier: int = Blocks.TIER[b]
 	var item: Dictionary = equipped["pickaxe"]
 	var hardness := Items.hardness(item)
-	var point := World.center_of(cell) + Vector3(target["normal"]) * World.VOXEL * 0.5
+	var point: Vector3 = target["point"]
+	var normal: Vector3 = target["normal"]
 	var rec := furniture_at(cell)
 	if not rec.is_empty() and rec["type"] == "dummy":
 		_dummy_hit(point, Items.damage(item))
 		player.impact(0.6, false)
 		return
+	if Blocks.is_treasure(b):
+		sfx.play("clink", randf_range(1.2, 1.4), -6.0)
+		effects.sparks(point, normal)
+		player.impact(0.6, true)
+		toast("Careful with that! Press E to dig it out.", Hud.GOLD)
+		return
 	if tier < 0:
 		sfx.play("clink", randf_range(0.9, 1.1), -4.0)
-		effects.sparks(point, Vector3(target["normal"]))
+		effects.sparks(point, normal)
 		player.impact(1.0, true)
 		if b == Blocks.BEDROCK:
 			toast("Bedrock. Nothing digs through this.")
@@ -474,81 +476,71 @@ func on_swing_hit(target: Dictionary) -> void:
 		return
 	if tier > hardness:
 		sfx.play("clink", randf_range(0.9, 1.1), -4.0)
-		effects.sparks(point, Vector3(target["normal"]))
+		effects.sparks(point, normal)
 		player.impact(1.0, true)
 		toast("Too hard! %s needs %s pickaxe. Buy one at your workbench." % [Blocks.NAMES[b], _article(Items.TIER_NAMES["pickaxe"][tier])], Color(1.0, 0.65, 0.5))
 		return
-	var radius: float = float(Catalog.SIZES[workshop["size"]]["radius"]) * Items.dig_size(item)
-	var center := Vector3(cell) + Vector3(0.5, 0.5, 0.5)
-	var result: Dictionary = world.carve(center, radius, hardness)
+	var radius := dig_radius()
+	var power := DIG_POWER
+	var strong := _rng.randf() * 100.0 < Items.affix(item, "double")
+	if strong:
+		power *= 2.0
+	# The blow lands a little way into the surface, so the dent opens right where you aimed.
+	var result: Dictionary = world.dent(point - normal * (radius * 0.2 * World.VOXEL), radius, power, hardness)
 	if Items.legend(item) == "tunneler":
 		var dir: Vector3 = player.forward()
 		for k in range(1, 7):
-			_merge(result, world.carve(center + dir * (k * 0.5 / World.VOXEL), radius * 0.85, hardness))
+			var more: Dictionary = world.blast((point + dir * (k * 0.5)) / World.VOXEL, maxf(radius * 1.2, 3.6), hardness)
+			result["removed"] = int(result["removed"]) + int(more["removed"])
+			result["vault"] = result["vault"] or more["vault"]
 	sfx.play("dig", randf_range(0.8, 1.15), -3.0)
-	player.impact(0.7 if Blocks.TIER[b] > 0 else 0.5, false)
+	player.impact(0.7 if tier > 0 else 0.5, false)
+	var color: Color = Blocks.COLORS[b]
+	effects.debris(point, normal, color, 8 + mini(int(result["removed"]) / 4, 16))
 	if int(result["removed"]) > 0:
-		sfx.play("break", randf_range(0.85, 1.1), -2.0)
-		effects.debris(point, Vector3(target["normal"]), Blocks.COLORS[b], 16)
-		effects.dust(point)
-	_take_result(result, center, radius, item)
+		sfx.play("break", randf_range(0.85, 1.1), -6.0 if int(result["removed"]) < 20 else -2.0)
+		effects.dust(point, color.darkened(0.3))
+	if strong:
+		effects.sparks(point, normal)
+		player.impact(0.5, true)
+	_check_vaults(result, point / World.VOXEL, radius)
 
 
-func _merge(into: Dictionary, more: Dictionary) -> void:
-	into["removed"] = int(into["removed"]) + int(more["removed"])
-	into["vault"] = into["vault"] or more["vault"]
-	for d: int in more["drops"]:
-		into["drops"][d] = int(into["drops"].get(d, 0)) + int(more["drops"][d])
-	for t: int in more["treasures"]:
-		if not into["treasures"].has(t):
-			into["treasures"].append(t)
-
-
-# Whatever came loose goes in your pack, any treasure is found, and a hidden room you broke
-# into wakes up.
-func _take_result(result: Dictionary, center: Vector3, radius: float, item: Dictionary, share := 1.0) -> void:
-	var double := Items.affix(item, "double")
-	var drops: Dictionary = result["drops"]
-	for d: int in drops:
-		var n := roundi(int(drops[d]) * share)
-		if double > 0.0 and _rng.randf() * 100.0 < double:
-			n *= 2
-		materials[d] = count(d) + n
-	for t: int in result["treasures"]:
-		_found_treasure(int(world.treasure_list[t]["type"]), world.treasure_list[t]["center"], item)
+# A hidden room you broke into wakes up.
+func _check_vaults(result: Dictionary, center: Vector3, radius: float) -> void:
 	if result.get("vault", false):
 		for v in world.vaults_near(center, radius):
 			if not vault_state[v]["opened"]:
 				open_vault(v)
-	hud.refresh()
 
 
+# The leveller: flattens the floor, wall or ceiling you're looking at, cutting away bumps and
+# filling dips with the ground around them.
 func on_level(target: Dictionary) -> void:
 	var item: Dictionary = equipped["pickaxe"]
-	var mat := selected_material()
 	var half := level_half()
-	var result: Dictionary = world.flatten(target["cell"], target["normal"], half, LEVEL_CUT, LEVEL_FILL, Items.hardness(item), mat, count(mat), player.body.lo(), player.body.hi())
-	materials[mat] = count(mat) - int(result["placed"])
-	var point := World.center_of(target["cell"]) + Vector3(target["normal"]) * World.VOXEL * 0.5
-	if int(result["removed"]) + int(result["placed"]) == 0:
+	var face: Vector3i = target["face"]
+	var axis := 0 if face.x != 0 else (1 if face.y != 0 else 2)
+	var b: int = target["block"]
+	var fill_block := b if Blocks.is_natural(b) else Blocks.DIRT
+	var point: Vector3 = target["point"]
+	var result: Dictionary = world.flatten(point, axis, face[axis], half, LEVEL_CUT, LEVEL_FILL, Items.hardness(item), fill_block, player.body.lo(), player.body.hi())
+	if not result["changed"]:
 		sfx.play("clink", 1.2, -8.0)
-		toast("It's already flat here." if count(mat) > 0 else "It's flat as far as it goes; holes need %s to fill them. R picks another material." % String(Blocks.NAMES[mat]).to_lower())
+		toast("It's already flat here.")
 		return
 	sfx.play("level", randf_range(0.9, 1.1))
 	effects.dust(point)
-	effects.debris(point, Vector3(target["normal"]), Blocks.COLORS[target["block"]], 10)
-	if count(mat) <= 0:
-		toast("Out of %s. Some holes may still be open: R picks another material." % String(Blocks.NAMES[mat]).to_lower(), Color(1.0, 0.75, 0.5))
-	_take_result(result, Vector3(target["cell"]), float(half), item)
+	effects.debris(point, Vector3(face), Blocks.COLORS[b], 10)
+	_check_vaults(result, point / World.VOXEL, float(half))
 
 
-func on_blocks_placed(cells: Array[Vector3i], b: int) -> void:
-	var n := mini(cells.size(), count(b))
-	for k in n:
-		world.set_block(cells[k], b)
-	materials[b] = count(b) - n
-	sfx.play("place", randf_range(0.9, 1.1))
-	hud.refresh()
+# E on treasure you've uncovered: it comes out of the ground.
+func _dig_out(t: int) -> void:
+	var info: Dictionary = world.treasure_list[t]
+	world.collect(t)
+	effects.debris(info["center"], Vector3.UP, Blocks.COLORS[Blocks.DIRT], 14)
+	_found_treasure(int(info["type"]), info["center"], equipped["pickaxe"])
 
 
 func _found_treasure(t: int, where: Vector3, item := {}) -> void:
@@ -559,6 +551,7 @@ func _found_treasure(t: int, where: Vector3, item := {}) -> void:
 	sfx.play("treasure")
 	effects.burst(where, Hud.GOLD, 24, 3.0, 0.05)
 	hud.show_find(t, value)
+	hud.refresh()
 	House.show_trophies(world, decor, found, house_tier)
 	if world.remaining_treasures() == 0:
 		toast("Every treasure here has been found! Start a new dig site from the pause menu.", Hud.GOLD)
@@ -592,14 +585,9 @@ func explode_bomb(kind: String, pos: Vector3) -> void:
 # Blows a ball of ground apart, hurting everything nearby (you included, by `self_harm`).
 func explode(pos: Vector3, radius: float, tier: int, damage: float, item: Dictionary, self_harm: float) -> void:
 	var center := pos / World.VOXEL
-	var result: Dictionary = world.carve(center, radius / World.VOXEL, tier)
-	var color: Color = Blocks.COLORS[Blocks.DIRT]
-	var most := 0
-	for d: int in result["drops"]:
-		if int(result["drops"][d]) > most:
-			most = int(result["drops"][d])
-			color = Blocks.COLORS[d]
-	_take_result(result, center, radius / World.VOXEL, item, 0.5)
+	var result: Dictionary = world.blast(center, radius / World.VOXEL, tier)
+	var color: Color = Blocks.COLORS[result["block"] if int(result["block"]) != Blocks.AIR else Blocks.DIRT]
+	_check_vaults(result, center, radius / World.VOXEL)
 	var reach := radius * 1.8
 	for e in enemies.near(pos, reach):
 		var falloff := clampf(1.0 - e.body.position.distance_to(pos) / reach, 0.3, 1.0)
@@ -643,17 +631,17 @@ func melee_hit(e, item: Dictionary, damage: float, opts: Dictionary) -> void:
 		player.heal(damage * leech / 100.0)
 
 
-# A swing that hit the cubes instead of a guard.
+# A swing that hit the walls instead of a guard.
 func melee_hit_block(target: Dictionary, item: Dictionary, damage: float) -> void:
 	var cell: Vector3i = target["cell"]
-	var point := World.center_of(cell) + Vector3(target["normal"]) * World.VOXEL * 0.5
+	var point: Vector3 = target["point"]
 	var rec := furniture_at(cell)
 	if not rec.is_empty() and rec["type"] == "dummy":
 		var crit := _rng.randf() * 100.0 < Items.affix(item, "crit")
 		_dummy_hit(point, damage * (2.0 if crit else 1.0), crit)
 		return
 	sfx.play("clink", randf_range(0.7, 0.9), -8.0)
-	effects.sparks(point, Vector3(target["normal"]))
+	effects.sparks(point, target["normal"])
 
 
 func _dummy_hit(point: Vector3, damage: float, crit := false) -> void:
@@ -676,8 +664,8 @@ func earthshake(item: Dictionary, at: Vector3, damage: float) -> void:
 	sfx.play_at("slam", at, 0.9, 0.0)
 	for e in enemies.near(at, 4.0):
 		enemies.hurt(e, damage * 0.5, at, {"knockback": 5.0, "stun": 1.0, "item": item})
-	var result: Dictionary = world.carve(at / World.VOXEL, 1.0 / World.VOXEL, 1)
-	_take_result(result, at / World.VOXEL, 8.0, item)
+	var result: Dictionary = world.blast(at / World.VOXEL, 1.0 / World.VOXEL, 1)
+	_check_vaults(result, at / World.VOXEL, 8.0)
 
 
 func arrow_hit_enemy(p: Dictionary, e, at: Vector3) -> void:
@@ -1139,7 +1127,6 @@ func _save_data() -> Dictionary:
 		"version": SAVE_VERSION,
 		"seed": world.world_seed,
 		"edits": world.edits_data(),
-		"materials": materials,
 		"found": found,
 		"coins": coins,
 		"bag": bag,
@@ -1154,17 +1141,12 @@ func _save_data() -> Dictionary:
 		"rested": rested,
 		"detector": detector_on,
 		"slot": player.slot,
-		"material": material_index,
 		"explosive": explosive_index,
 		"tracked": tracked,
 	}
 
 
 func _load_progress(save: Dictionary) -> void:
-	var saved_materials: Dictionary = save.get("materials", {})
-	for k in saved_materials:
-		if int(k) > 0 and int(k) < Blocks.DEFS.size():
-			materials[int(k)] = int(saved_materials[k])
 	var saved_found: Dictionary = save.get("found", {})
 	for k in saved_found:
 		found[int(k)] = int(saved_found[k])
@@ -1210,7 +1192,6 @@ func _load_progress(save: Dictionary) -> void:
 			storage[str(rec["id"])] = list
 	rested = maxf(0.0, float(save.get("rested", 0.0)))
 	detector_on = bool(save.get("detector", true))
-	material_index = clampi(int(save.get("material", 0)), 0, Blocks.MATERIALS.size() - 1)
 	explosive_index = clampi(int(save.get("explosive", 0)), 0, Catalog.EXPLOSIVE_ORDER.size() - 1)
 	tracked = int(save.get("tracked", -1))
 
@@ -1232,6 +1213,20 @@ func _read_save() -> Dictionary:
 	if not FileAccess.file_exists(SAVE_PATH):
 		return {}
 	var parsed = JSON.parse_string(FileAccess.get_file_as_string(SAVE_PATH))
-	if parsed is Dictionary and parsed.has("seed") and int(parsed.get("version", 0)) == SAVE_VERSION:
-		return parsed
+	if not parsed is Dictionary or not parsed.has("seed"):
+		return {}
+	var data: Dictionary = parsed
+	match int(data.get("version", 0)):
+		SAVE_VERSION:
+			return data
+		3:
+			# A save from 0.3 keeps everything you own, but its dig site was dug out of cubes:
+			# you start again at a fresh one.
+			data["version"] = SAVE_VERSION
+			data["seed"] = randi()
+			data["edits"] = {}
+			data["vaults"] = []
+			data["tracked"] = -1
+			data.erase("player")
+			return data
 	return {}
