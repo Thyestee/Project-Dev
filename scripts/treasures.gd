@@ -1,5 +1,5 @@
 extends RefCounted
-# The lost treasures buried in every world. Depths are in blocks below the original ground.
+# The lost treasures buried at every dig site. Depths are in metres below the room floor.
 
 const PER_WORLD := 45
 const RARITY_NAMES := ["Common", "Uncommon", "Rare", "Epic", "Legendary"]

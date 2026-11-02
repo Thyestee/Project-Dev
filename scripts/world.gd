@@ -1,75 +1,104 @@
 extends Node3D
-# The voxel world: block data, terrain generation, edits, ray casts and the chunk meshes.
+# The voxel world: small cubes of ground under your room, edits, ray casts, lights and the
+# chunk meshes.
 #
-# Blocks live in one flat array with a one-block border on every side (air around and above,
-# bedrock below), so neighbour lookups never need bounds checks.
+# Blocks live in one flat array, stored column by column, with a one-block border of bedrock
+# all around, so neighbour lookups never need bounds checks. Positions are in metres; a cell is
+# one block, VOXEL metres on a side, and cell coordinates are named as such.
 
 const Blocks := preload("res://scripts/blocks.gd")
 const Treasures := preload("res://scripts/treasures.gd")
-const Textures := preload("res://scripts/textures.gd")
 const Mesher := preload("res://scripts/chunk_mesher.gd")
+const Room := preload("res://scripts/room.gd")
 
-const SX := 96
-const SY := 64
-const SZ := 96
+const VOXEL := 0.25
+const SX := 256
+const SY := 192
+const SZ := 256
+const FLOOR_Y := 172       # cell height of the room floor; the ground below it can be dug
 const CHUNK := 16
 const CHUNK_SHIFT := 4
+const CX := SX >> CHUNK_SHIFT
+const CY := SY >> CHUNK_SHIFT
+const CZ := SZ >> CHUNK_SHIFT
 const PX := SX + 2
-const PZ := SZ + 2
-const LAYER := PX * PZ
+const PY := SY + 2
+const STRIDE_X := PY
+const STRIDE_Z := PY * PX
+const MAX_LIGHTS := 16
 
 const SHADER := """
 shader_type spatial;
 render_mode unshaded, cull_back;
 
-uniform sampler2DArray tiles : source_color, filter_nearest_mipmap_anisotropic, repeat_disable;
 uniform vec3 lamp_pos = vec3(0.0);
 uniform float lamp_range = 8.0;
-uniform float daylight = 1.0;
+uniform vec4 light_pos[16];   // xyz, range (0 = off)
+uniform vec4 light_col[16];   // rgb, lowest height it reaches
+uniform float ambient = 0.035;
 
 varying vec3 world_pos;
+varying vec3 world_normal;
 varying vec2 info;
+
+float hash(vec3 p) {
+	p = fract(p * vec3(0.1031, 0.103, 0.0973));
+	p += dot(p, p.yxz + 33.33);
+	return fract((p.x + p.y) * p.z);
+}
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	world_normal = NORMAL;
 	info = UV2;
 }
 
 void fragment() {
-	vec4 tex = texture(tiles, vec3(UV, info.x));
-	// Your head lamp lights whatever is close, sky light does the rest.
+	// Each cube gets its own shade and a thin dark line along its edges.
+	vec3 g = world_pos * 4.0;
+	float jitter = 1.0 + (hash(floor(g - world_normal * 0.5)) - 0.5) * 2.0 * info.y;
+	vec3 e = min(fract(g), 1.0 - fract(g));
+	vec3 an = abs(world_normal);
+	float d = an.x > 0.5 ? min(e.y, e.z) : (an.y > 0.5 ? min(e.x, e.z) : min(e.x, e.y));
+	float aa = fwidth(d);
+	float line = (1.0 - smoothstep(0.05 - aa, 0.05 + aa, d)) * clamp(1.0 - aa * 3.0, 0.0, 1.0);
+	vec3 albedo = COLOR.rgb * jitter * (1.0 - 0.25 * line);
+
+	// Your head lamp, then the room's lanterns and windows.
 	float lamp = 1.0 - clamp(distance(world_pos, lamp_pos) / lamp_range, 0.0, 1.0);
-	lamp = lamp * lamp * (3.0 - 2.0 * lamp);
-	vec3 light = vec3(COLOR.g * daylight) + vec3(1.0, 0.86, 0.66) * lamp;
-	light = clamp(light, vec3(0.02), vec3(1.0));
-	vec3 col = tex.rgb * COLOR.r * light;
-	// Treasure blocks shimmer.
-	float shimmer = 0.5 + 0.5 * sin(TIME * 3.0 + world_pos.x * 1.7 + world_pos.y * 2.3 + world_pos.z * 1.3);
-	col += tex.rgb * info.y * (0.25 + 0.35 * shimmer);
-	ALBEDO = col;
+	vec3 light = vec3(ambient) + vec3(1.0, 0.86, 0.66) * lamp * lamp * (3.0 - 2.0 * lamp);
+	for (int k = 0; k < 16; k++) {
+		vec4 lp = light_pos[k];
+		if (lp.w > 0.0 && world_pos.y > light_col[k].a) {
+			float a = 1.0 - clamp(distance(world_pos, lp.xyz) / lp.w, 0.0, 1.0);
+			light += light_col[k].rgb * a * a;
+		}
+	}
+	float shimmer = 0.75 + 0.25 * sin(TIME * 3.0 + world_pos.x * 3.1 + world_pos.y * 4.3 + world_pos.z * 2.7);
+	ALBEDO = albedo * min(light, vec3(1.25)) + albedo * info.x * shimmer;
 }
 """
 
 var blocks := PackedByteArray()
-var top := PackedInt32Array()      # highest sky-blocking block of each column (border-padded index)
-var ground := PackedInt32Array()   # generated ground height of each column
-var treasures := {}                # block index -> {"cell": Vector3i, "type": int}
-var edits := {}                    # block index -> block id, for everything changed since generation
+var treasures := {}                       # cell index -> treasure number in treasure_list
+var treasure_list: Array[Dictionary] = [] # {"type", "center" (metres), "cells", "lo", "hi", "found"}
+var edits := {}                           # cell index -> block, for all digging and placing
 var world_seed := 0
 var material: ShaderMaterial
-var _meshes := {}                  # chunk Vector3i -> MeshInstance3D
+var lights: Array = []                    # {"pos", "color", "range", "min_y", "flicker"}
+var _meshes := {}                         # chunk Vector3i -> MeshInstance3D
 var _dirty := {}
+var _air := PackedByteArray()             # per chunk: 1 once it has any air in it
 var _build_queue: Array[Vector3i] = []
 var _build_total := 0
+var _runs := []                           # block -> {length: PackedByteArray of that block}
 
 
 func _ready() -> void:
-	Textures.build()
 	var shader := Shader.new()
 	shader.code = SHADER
 	material = ShaderMaterial.new()
 	material.shader = shader
-	material.set_shader_parameter("tiles", Textures.array)
 
 
 func _process(_delta: float) -> void:
@@ -84,91 +113,87 @@ func _process(_delta: float) -> void:
 # --- Lookups -----------------------------------------------------------------
 
 static func index(x: int, y: int, z: int) -> int:
-	return (x + 1) + (z + 1) * PX + (y + 1) * LAYER
-
-
-static func column(x: int, z: int) -> int:
-	return (x + 1) + (z + 1) * PX
+	return (y + 1) + (x + 1) * STRIDE_X + (z + 1) * STRIDE_Z
 
 
 static func in_bounds(c: Vector3i) -> bool:
 	return c.x >= 0 and c.y >= 0 and c.z >= 0 and c.x < SX and c.y < SY and c.z < SZ
 
 
+static func cell_of(p: Vector3) -> Vector3i:
+	return Vector3i(floori(p.x / VOXEL), floori(p.y / VOXEL), floori(p.z / VOXEL))
+
+
+static func center_of(c: Vector3i) -> Vector3:
+	return (Vector3(c) + Vector3(0.5, 0.5, 0.5)) * VOXEL
+
+
 func block(x: int, y: int, z: int) -> int:
-	if y < 0:
+	if x < 0 or y < 0 or z < 0 or x >= SX or y >= SY or z >= SZ:
 		return Blocks.BEDROCK
-	if x < 0 or z < 0 or x >= SX or z >= SZ or y >= SY:
-		return Blocks.AIR
 	return blocks[index(x, y, z)]
 
 
-# For movement: the world's sides are walls, its floor is bedrock and its top is open.
-func is_solid(x: int, y: int, z: int) -> bool:
-	if x < 0 or z < 0 or x >= SX or z >= SZ or y < 0:
-		return true
-	if y >= SY:
-		return false
-	return blocks[index(x, y, z)] != Blocks.AIR
-
-
 func box_hits_solid(lo: Vector3, hi: Vector3) -> bool:
-	for y in range(floori(lo.y), floori(hi.y - 0.0001) + 1):
-		for z in range(floori(lo.z), floori(hi.z - 0.0001) + 1):
-			for x in range(floori(lo.x), floori(hi.x - 0.0001) + 1):
-				if is_solid(x, y, z):
+	var x0 := floori(lo.x / VOXEL)
+	var y0 := floori(lo.y / VOXEL)
+	var z0 := floori(lo.z / VOXEL)
+	var x1 := floori(hi.x / VOXEL - 0.0001)
+	var y1 := floori(hi.y / VOXEL - 0.0001)
+	var z1 := floori(hi.z / VOXEL - 0.0001)
+	if x0 < 0 or y0 < 0 or z0 < 0 or x1 >= SX or y1 >= SY or z1 >= SZ:
+		return true
+	for z in range(z0, z1 + 1):
+		for x in range(x0, x1 + 1):
+			var i := index(x, y0, z)
+			for y in range(y0, y1 + 1):
+				if blocks[i] != Blocks.AIR:
 					return true
+				i += 1
 	return false
-
-
-func treasure_at(c: Vector3i) -> Dictionary:
-	return treasures.get(index(c.x, c.y, c.z), {})
 
 
 func nearest_treasure_distance(p: Vector3) -> float:
 	var best := INF
-	for t: Dictionary in treasures.values():
-		var c: Vector3i = t["cell"]
-		best = minf(best, p.distance_to(Vector3(c) + Vector3(0.5, 0.5, 0.5)))
+	for t: Dictionary in treasure_list:
+		if not t["found"]:
+			best = minf(best, p.distance_to(t["center"]))
 	return best
 
 
-func sky_at(p: Vector3) -> float:
-	var x := floori(p.x)
-	var y := floori(p.y)
-	var z := floori(p.z)
-	if x < 0 or z < 0 or x >= SX or z >= SZ or y >= SY:
-		return 1.0
-	return Mesher.sky_light(top, ground, column(x, z), y, PX)
+func remaining_treasures() -> int:
+	var n := 0
+	for t: Dictionary in treasure_list:
+		if not t["found"]:
+			n += 1
+	return n
 
 
-# Metres below the original ground for feet at p.
-func depth_at(p: Vector3) -> int:
-	var x := clampi(floori(p.x), 0, SX - 1)
-	var z := clampi(floori(p.z), 0, SZ - 1)
-	return maxi(0, ground[column(x, z)] + 1 - floori(p.y))
+# Metres below the room floor for feet at p.
+func depth_at(p: Vector3) -> float:
+	return FLOOR_Y * VOXEL - p.y
 
 
 func spawn_point() -> Vector3:
-	return surface_point(Vector3(SX * 0.5, 0.0, SZ * 0.5))
+	return Room.SPAWN * VOXEL
 
 
-func surface_point(p: Vector3) -> Vector3:
-	var x := clampi(floori(p.x), 0, SX - 1)
-	var z := clampi(floori(p.z), 0, SZ - 1)
-	return Vector3(x + 0.5, top[column(x, z)] + 1.0, z + 0.5)
+func can_place(c: Vector3i) -> bool:
+	return in_bounds(c) and c.y < FLOOR_Y and blocks[index(c.x, c.y, c.z)] == Blocks.AIR and not Room.in_stairs(c)
 
 
 # Walks the ray through the grid one cell at a time. Returns the first non-air cell, the empty
 # cell just before it (where a placed block would go) and the block, or {} if nothing is in reach.
 func raycast(origin: Vector3, dir: Vector3, max_dist: float) -> Dictionary:
-	var cell := Vector3i(floori(origin.x), floori(origin.y), floori(origin.z))
+	var o := origin / VOXEL
+	var cell := Vector3i(floori(o.x), floori(o.y), floori(o.z))
 	var step := Vector3i(int(signf(dir.x)), int(signf(dir.y)), int(signf(dir.z)))
 	var t_delta := Vector3(_cell_span(dir.x), _cell_span(dir.y), _cell_span(dir.z))
-	var t_max := Vector3(_first_crossing(origin.x, dir.x, cell.x), _first_crossing(origin.y, dir.y, cell.y), _first_crossing(origin.z, dir.z, cell.z))
+	var t_max := Vector3(_first_crossing(o.x, dir.x, cell.x), _first_crossing(o.y, dir.y, cell.y), _first_crossing(o.z, dir.z, cell.z))
 	var prev := cell
 	var t := 0.0
-	while t <= max_dist:
+	var limit := max_dist / VOXEL
+	while t <= limit:
 		var b := block(cell.x, cell.y, cell.z)
 		if b != Blocks.AIR:
 			return {"cell": cell, "prev": prev, "block": b}
@@ -202,90 +227,202 @@ static func _first_crossing(o: float, d: float, c: int) -> float:
 
 # --- Edits -------------------------------------------------------------------
 
+# A change made by the player; it goes in the save.
 func set_block(c: Vector3i, b: int) -> void:
 	var i := index(c.x, c.y, c.z)
-	var old := blocks[i]
-	if old == b:
+	if blocks[i] == b:
 		return
 	blocks[i] = b
 	edits[i] = b
-	if Blocks.is_treasure(old):
+	_touch(c, c, b == Blocks.AIR)
+
+
+# Building the room and its upgrades; rebuilt from scratch on every load, so not saved.
+func put(x: int, y: int, z: int, b: int) -> void:
+	blocks[index(x, y, z)] = b
+	_touch(Vector3i(x, y, z), Vector3i(x, y, z), b == Blocks.AIR)
+
+
+func fill(lo: Vector3i, hi: Vector3i, b: int) -> void:
+	for z in range(lo.z, hi.z + 1):
+		for x in range(lo.x, hi.x + 1):
+			var i := index(x, lo.y, z)
+			for y in range(lo.y, hi.y + 1):
+				blocks[i] = b
+				i += 1
+	_touch(lo, hi, b == Blocks.AIR)
+
+
+# One pickaxe swing: clears the ground within `radius` cells of the cell that was hit, as far as
+# the pick head's tier allows. Any treasure it touches comes out whole.
+func carve(center: Vector3i, radius: float, tier: int) -> Dictionary:
+	var r := ceili(radius)
+	var r2 := radius * radius
+	var drops := {}
+	var found: Array[int] = []
+	var removed := 0
+	for dz in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			var h2 := r2 - dx * dx - dz * dz
+			var x := center.x + dx
+			var z := center.z + dz
+			if h2 < 0.0 or x < 0 or z < 0 or x >= SX or z >= SZ:
+				continue
+			var hy := int(sqrt(h2))
+			var y0 := maxi(center.y - hy, 0)
+			var y1 := mini(center.y + hy, SY - 1)
+			var i := index(x, y0, z)
+			for y in range(y0, y1 + 1):
+				var b := blocks[i]
+				if Blocks.is_treasure(b):
+					var t: int = treasures.get(i, -1)
+					if t >= 0 and not found.has(t):
+						found.append(t)
+				elif Blocks.is_natural(b) and Blocks.TIER[b] <= tier:
+					blocks[i] = Blocks.AIR
+					edits[i] = Blocks.AIR
+					drops[b] = int(drops.get(b, 0)) + 1
+					removed += 1
+				i += 1
+	if removed > 0:
+		_touch(center - Vector3i(r, r, r), center + Vector3i(r, r, r), true)
+	for t in found:
+		_collect(t)
+	return {"drops": drops, "treasures": found, "removed": removed}
+
+
+func _collect(t: int) -> void:
+	var info := treasure_list[t]
+	info["found"] = true
+	for i: int in info["cells"]:
+		blocks[i] = Blocks.AIR
+		edits[i] = Blocks.AIR
 		treasures.erase(i)
-	var col := column(c.x, c.z)
-	var old_top := top[col]
-	_update_top(c.x, c.z)
-	_mark_box(c - Vector3i.ONE, c + Vector3i.ONE)
-	# Opening or closing a column to the sky relights everything around it.
-	if top[col] != old_top:
-		var lo := mini(old_top, top[col])
-		var hi := maxi(old_top, top[col])
-		_mark_box(Vector3i(c.x - 2, lo - 1, c.z - 2), Vector3i(c.x + 2, hi + 2, c.z + 2))
+	_touch(info["lo"], info["hi"], true)
 
 
-func apply_edits(list: Array) -> void:
-	for k in range(0, list.size() - 1, 2):
-		var i := int(list[k])
-		var b := int(list[k + 1])
-		if i >= 0 and i < blocks.size():
-			blocks[i] = b
-			edits[i] = b
-	for i: int in treasures.keys():
-		if not Blocks.is_treasure(blocks[i]):
-			treasures.erase(i)
-	for z in SZ:
-		for x in SX:
-			_update_top(x, z)
+func edits_data() -> Dictionary:
+	if edits.is_empty():
+		return {}
+	var cells := PackedInt32Array(edits.keys())
+	var values := PackedByteArray()
+	values.resize(cells.size())
+	for k in cells.size():
+		values[k] = edits[cells[k]]
+	return {"cells": Marshalls.raw_to_base64(cells.to_byte_array()), "blocks": Marshalls.raw_to_base64(values)}
 
 
-func edits_list() -> Array:
-	var out := []
-	for i: int in edits:
-		out.append(i)
-		out.append(edits[i])
-	return out
+func apply_edits_data(data: Dictionary) -> void:
+	if str(data.get("cells", "")).is_empty():
+		return
+	var cells := Marshalls.base64_to_raw(str(data.get("cells", ""))).to_int32_array()
+	var values := Marshalls.base64_to_raw(str(data.get("blocks", "")))
+	if cells.size() != values.size():
+		return
+	for k in cells.size():
+		var i := cells[k]
+		if i < 0 or i >= blocks.size():
+			continue
+		blocks[i] = values[k]
+		edits[i] = values[k]
+		if values[k] == Blocks.AIR:
+			_air[_chunk_of_index(i)] = 1
+	# Treasure that was dug into has been found.
+	for t in treasure_list.size():
+		var info := treasure_list[t]
+		var first: int = info["cells"][0]
+		if not info["found"] and not Blocks.is_treasure(blocks[first]):
+			_collect(t)
 
 
-func _update_top(x: int, z: int) -> void:
-	var col := column(x, z)
-	var y := SY - 1
-	var i := index(x, y, z)
-	while y >= 0 and not Blocks.BLOCKS_SKY[blocks[i]]:
-		y -= 1
-		i -= LAYER
-	top[col] = y
+# --- Lights ------------------------------------------------------------------
+
+func set_lights(list: Array) -> void:
+	lights = list
+	update_lights(0.0)
+
+
+func update_lights(time: float) -> void:
+	var pos := PackedVector4Array()
+	var col := PackedVector4Array()
+	for k in MAX_LIGHTS:
+		if k >= lights.size():
+			pos.append(Vector4.ZERO)
+			col.append(Vector4.ZERO)
+			continue
+		var l: Dictionary = lights[k]
+		var p: Vector3 = l["pos"]
+		var c: Color = l["color"]
+		var f := 1.0
+		if l.get("flicker", false):
+			f = 0.84 + 0.1 * sin(time * 11.0) + 0.06 * sin(time * 23.7 + 1.3)
+		pos.append(Vector4(p.x, p.y, p.z, l["range"]))
+		col.append(Vector4(c.r * f, c.g * f, c.b * f, l.get("min_y", -100.0)))
+	material.set_shader_parameter("light_pos", pos)
+	material.set_shader_parameter("light_col", col)
 
 
 # --- Chunk meshes --------------------------------------------------------------
 
+# Queues every chunk that can have visible faces (it or a neighbour has air), nearest first.
 func queue_all_chunks(center: Vector3) -> void:
+	_dirty.clear()
 	_build_queue.clear()
-	for cy in SY >> CHUNK_SHIFT:
-		for cz in SZ >> CHUNK_SHIFT:
-			for cx in SX >> CHUNK_SHIFT:
-				_build_queue.append(Vector3i(cx, cy, cz))
+	for cy in CY:
+		for cz in CZ:
+			for cx in CX:
+				if _near_air(cx, cy, cz):
+					_build_queue.append(Vector3i(cx, cy, cz))
 	# Nearest chunks last, since the queue is built from the back.
-	var c := center / CHUNK - Vector3(0.5, 0.5, 0.5)
+	var c := center / (CHUNK * VOXEL) - Vector3(0.5, 0.5, 0.5)
 	_build_queue.sort_custom(func(a: Vector3i, b: Vector3i) -> bool: return Vector3(a).distance_squared_to(c) > Vector3(b).distance_squared_to(c))
 	_build_total = _build_queue.size()
 
 
 func build_progress() -> float:
 	if _build_total == 0:
-		return 0.0
+		return 1.0
 	return 1.0 - float(_build_queue.size()) / _build_total
 
 
-func _mark_box(lo: Vector3i, hi: Vector3i) -> void:
-	var c0 := Vector3i(clampi(lo.x, 0, SX - 1), clampi(lo.y, 0, SY - 1), clampi(lo.z, 0, SZ - 1))
-	var c1 := Vector3i(clampi(hi.x, 0, SX - 1), clampi(hi.y, 0, SY - 1), clampi(hi.z, 0, SZ - 1))
+func mesh_count() -> int:
+	return _meshes.size()
+
+
+func _near_air(cx: int, cy: int, cz: int) -> bool:
+	for o: Vector3i in [Vector3i.ZERO, Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 1, 0), Vector3i(0, -1, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1)]:
+		var x := cx + o.x
+		var y := cy + o.y
+		var z := cz + o.z
+		if x >= 0 and y >= 0 and z >= 0 and x < CX and y < CY and z < CZ and _air[x + z * CX + y * CX * CZ] == 1:
+			return true
+	return false
+
+
+static func _chunk_of_index(i: int) -> int:
+	var y := clampi(i % PY - 1, 0, SY - 1)
+	var x := clampi((i / PY) % PX - 1, 0, SX - 1)
+	var z := clampi(i / STRIDE_Z - 1, 0, SZ - 1)
+	return (x >> CHUNK_SHIFT) + (z >> CHUNK_SHIFT) * CX + (y >> CHUNK_SHIFT) * CX * CZ
+
+
+# Marks the chunks around a changed box for rebuilding (and as having air, if it does now).
+func _touch(lo: Vector3i, hi: Vector3i, made_air: bool) -> void:
+	var c0 := Vector3i(clampi(lo.x - 1, 0, SX - 1), clampi(lo.y - 1, 0, SY - 1), clampi(lo.z - 1, 0, SZ - 1))
+	var c1 := Vector3i(clampi(hi.x + 1, 0, SX - 1), clampi(hi.y + 1, 0, SY - 1), clampi(hi.z + 1, 0, SZ - 1))
 	for cy in range(c0.y >> CHUNK_SHIFT, (c1.y >> CHUNK_SHIFT) + 1):
 		for cz in range(c0.z >> CHUNK_SHIFT, (c1.z >> CHUNK_SHIFT) + 1):
 			for cx in range(c0.x >> CHUNK_SHIFT, (c1.x >> CHUNK_SHIFT) + 1):
 				_dirty[Vector3i(cx, cy, cz)] = true
+	if made_air:
+		for cy in range(clampi(lo.y, 0, SY - 1) >> CHUNK_SHIFT, (clampi(hi.y, 0, SY - 1) >> CHUNK_SHIFT) + 1):
+			for cz in range(clampi(lo.z, 0, SZ - 1) >> CHUNK_SHIFT, (clampi(hi.z, 0, SZ - 1) >> CHUNK_SHIFT) + 1):
+				for cx in range(clampi(lo.x, 0, SX - 1) >> CHUNK_SHIFT, (clampi(hi.x, 0, SX - 1) >> CHUNK_SHIFT) + 1):
+					_air[cx + cz * CX + cy * CX * CZ] = 1
 
 
 func _build_chunk(key: Vector3i) -> void:
-	var mesh := Mesher.build(blocks, top, ground, PX, LAYER, key.x * CHUNK, key.y * CHUNK, key.z * CHUNK, CHUNK)
+	var mesh := Mesher.build(blocks, STRIDE_X, STRIDE_Z, key.x * CHUNK, key.y * CHUNK, key.z * CHUNK, CHUNK, VOXEL)
 	var mi: MeshInstance3D = _meshes.get(key)
 	if mesh == null:
 		if mi:
@@ -307,51 +444,17 @@ func generate(new_seed: int) -> void:
 	world_seed = new_seed
 	var rng := RandomNumberGenerator.new()
 	rng.seed = new_seed
-	blocks = PackedByteArray()
-	blocks.resize(LAYER * (SY + 2))
-	top = PackedInt32Array()
-	top.resize(LAYER)
-	top.fill(-1)
-	ground = PackedInt32Array()
-	ground.resize(LAYER)
 	treasures.clear()
+	treasure_list.clear()
 	edits.clear()
-	for i in LAYER:
-		blocks[i] = Blocks.BEDROCK
-	var height := _noise(new_seed, 0.016, 4)
-	var soil := _noise(new_seed + 1, 0.07, 1)
-	var clay := _noise(new_seed + 2, 0.035, 2)
-	var slate := _noise(new_seed + 3, 0.05, 2)
-	for z in SZ:
-		for x in SX:
-			var col := column(x, z)
-			var h := clampi(int(round(42.0 + height.get_noise_2d(x, z) * 14.0)), 30, SY - 12)
-			ground[col] = h
-			top[col] = h
-			var soil_depth := 3 + int(round(soil.get_noise_2d(x, z) * 1.6))
-			var clay_depth := soil_depth + (3 if clay.get_noise_2d(x, z) > 0.2 else 0)
-			var slate_y := 15 + int(round(slate.get_noise_2d(x, z) * 5.0))
-			var beach := h <= 36
-			var i := index(x, 0, z)
-			for y in h + 1:
-				var d := h - y
-				var b := Blocks.STONE
-				if y == 0 or (y == 1 and rng.randf() < 0.5):
-					b = Blocks.BEDROCK
-				elif d == 0:
-					b = Blocks.SAND if beach else Blocks.GRASS
-				elif d < soil_depth:
-					b = Blocks.SAND if beach else Blocks.DIRT
-				elif d < clay_depth:
-					b = Blocks.CLAY
-				elif y < slate_y:
-					b = Blocks.SLATE
-				blocks[i] = b
-				i += LAYER
+	_air = PackedByteArray()
+	_air.resize(CX * CY * CZ)
+	_fill_columns(new_seed)
 	_add_pockets(rng)
 	_carve_caves(rng)
-	_plant_trees(rng)
+	Room.build_base(self)
 	_place_treasures(rng)
+	_dirty.clear()
 
 
 static func _noise(s: int, frequency: float, octaves: int) -> FastNoiseLite:
@@ -362,101 +465,114 @@ static func _noise(s: int, frequency: float, octaves: int) -> FastNoiseLite:
 	return n
 
 
-# Blobs of gravel, clay and dirt scattered through the rock.
+# Lays down the ground in layers, one whole column at a time: bedrock at the bottom, then
+# deeprock, slate, stone, dirt with a band of clay, and solid bedrock above the ground.
+func _fill_columns(s: int) -> void:
+	_runs = []
+	for b in Blocks.COLORS.size():
+		_runs.append({})
+	var n_dirt := _noise(s, 0.02, 2)
+	var n_clay := _noise(s + 1, 0.03, 2)
+	var n_soft := _noise(s + 2, 0.015, 2)
+	var n_stone := _noise(s + 3, 0.012, 3)
+	var n_slate := _noise(s + 4, 0.012, 3)
+	var n_bed := _noise(s + 5, 0.08, 1)
+	blocks = PackedByteArray()
+	for z in range(-1, SZ + 1):
+		for x in range(-1, SX + 1):
+			if x < 0 or z < 0 or x >= SX or z >= SZ:
+				_run(Blocks.BEDROCK, PY)
+				continue
+			# Layer boundaries as depths in metres below the room floor, turned into cell heights.
+			var y_dirt := FLOOR_Y - int((8.5 + n_dirt.get_noise_2d(x, z) * 1.2) / VOXEL)
+			var y_clay := y_dirt - int((2.5 + n_clay.get_noise_2d(x, z) * 1.2) / VOXEL)
+			var y_soft := mini(y_clay, FLOOR_Y - int((13.0 + n_soft.get_noise_2d(x, z) * 1.5) / VOXEL))
+			var y_stone := mini(y_soft, FLOOR_Y - int((22.0 + n_stone.get_noise_2d(x, z) * 2.5) / VOXEL))
+			var y_slate := mini(y_stone, FLOOR_Y - int((32.0 + n_slate.get_noise_2d(x, z) * 2.5) / VOXEL))
+			var bed := mini(y_slate, 2 + int((n_bed.get_noise_2d(x, z) + 1.0) * 1.5))
+			_run(Blocks.BEDROCK, bed + 1)
+			_run(Blocks.DEEPROCK, y_slate - bed)
+			_run(Blocks.SLATE, y_stone - y_slate)
+			_run(Blocks.STONE, y_soft - y_stone)
+			_run(Blocks.DIRT, y_clay - y_soft)
+			_run(Blocks.CLAY, y_dirt - y_clay)
+			_run(Blocks.DIRT, FLOOR_Y - y_dirt)
+			_run(Blocks.BEDROCK, SY - FLOOR_Y + 1)
+
+
+func _run(b: int, length: int) -> void:
+	if length <= 0:
+		return
+	var cache: Dictionary = _runs[b]
+	if not cache.has(length):
+		var run := PackedByteArray()
+		run.resize(length)
+		run.fill(b)
+		cache[length] = run
+	blocks.append_array(cache[length])
+
+
+# Pockets of sand and gravel in the dirt, softer veins in the rock.
 func _add_pockets(rng: RandomNumberGenerator) -> void:
-	for n in 60:
-		var c := Vector3i(rng.randi_range(0, SX - 1), 0, rng.randi_range(0, SZ - 1))
-		c.y = rng.randi_range(3, ground[column(c.x, c.z)] - 5)
-		var roll := rng.randf()
-		var kind := Blocks.GRAVEL
-		if roll < 0.3:
-			kind = Blocks.CLAY
-		elif roll < 0.45:
-			kind = Blocks.DIRT
-		var r := Vector3(rng.randf_range(1.2, 3.0), rng.randf_range(1.0, 2.2), rng.randf_range(1.2, 3.0))
-		for dy in range(-3, 4):
-			for dz in range(-3, 4):
-				for dx in range(-3, 4):
-					if Vector3(dx / r.x, dy / r.y, dz / r.z).length_squared() > 1.0:
-						continue
-					var p := c + Vector3i(dx, dy, dz)
-					if not in_bounds(p):
-						continue
-					var i := index(p.x, p.y, p.z)
-					if blocks[i] == Blocks.STONE or blocks[i] == Blocks.SLATE:
-						blocks[i] = kind
+	for n in 340:
+		var c := Vector3i(rng.randi_range(6, SX - 7), rng.randi_range(8, FLOOR_Y - 4), rng.randi_range(6, SZ - 7))
+		var host := blocks[index(c.x, c.y, c.z)]
+		var kind := Blocks.AIR
+		match host:
+			Blocks.DIRT:
+				kind = Blocks.SAND if rng.randf() < 0.5 else Blocks.GRAVEL
+			Blocks.CLAY:
+				kind = Blocks.DIRT
+			Blocks.STONE:
+				kind = Blocks.GRAVEL
+			Blocks.SLATE:
+				kind = Blocks.STONE
+			Blocks.DEEPROCK:
+				kind = Blocks.SLATE
+		if kind != Blocks.AIR:
+			_blob(c, Vector3(rng.randf_range(3.0, 8.0), rng.randf_range(2.0, 5.0), rng.randf_range(3.0, 8.0)), host, kind)
 
 
-# A few winding caves, always with a few blocks of roof under the ground.
+# Fills an ellipsoid of cells, replacing only `host` blocks (or every natural block, for air).
+func _blob(c: Vector3i, r: Vector3, host: int, kind: int) -> void:
+	var made_air := kind == Blocks.AIR
+	for dz in range(-ceili(r.z), ceili(r.z) + 1):
+		for dx in range(-ceili(r.x), ceili(r.x) + 1):
+			var q := 1.0 - (dx / r.x) * (dx / r.x) - (dz / r.z) * (dz / r.z)
+			var x := c.x + dx
+			var z := c.z + dz
+			if q < 0.0 or x < 0 or z < 0 or x >= SX or z >= SZ:
+				continue
+			var hy := int(r.y * sqrt(q))
+			var y0 := maxi(c.y - hy, 0)
+			var y1 := mini(c.y + hy, FLOOR_Y - 1)
+			var i := index(x, y0, z)
+			for y in range(y0, y1 + 1):
+				var b := blocks[i]
+				if b == host or (made_air and Blocks.is_natural(b)):
+					blocks[i] = kind
+				i += 1
+	if made_air:
+		_touch(c - Vector3i(r.ceil()), c + Vector3i(r.ceil()), true)
+
+
+# A few winding caves, all well below the room.
 func _carve_caves(rng: RandomNumberGenerator) -> void:
-	for n in 7:
-		var p := Vector3(rng.randf_range(8.0, SX - 8.0), 0.0, rng.randf_range(8.0, SZ - 8.0))
-		p.y = rng.randf_range(6.0, ground[column(int(p.x), int(p.z))] - 12.0)
+	for n in 6:
+		var p := Vector3(rng.randf_range(24.0, SX - 24.0), rng.randf_range(20.0, FLOOR_Y - 40.0), rng.randf_range(24.0, SZ - 24.0))
 		var yaw := rng.randf() * TAU
 		var pitch := 0.0
-		for s in rng.randi_range(40, 90):
-			_carve_sphere(p, clampf(1.6 + 0.6 * sin(s * 0.3 + n) + rng.randf_range(-0.2, 0.2), 1.1, 2.4))
-			p += Vector3(cos(yaw) * cos(pitch), sin(pitch), sin(yaw) * cos(pitch))
-			yaw += rng.randf_range(-0.4, 0.4)
-			pitch = clampf(pitch + rng.randf_range(-0.2, 0.2), -0.5, 0.5) * 0.9
-			if p.x < 3.0 or p.x > SX - 4.0 or p.z < 3.0 or p.z > SZ - 4.0 or p.y < 3.0:
+		for s in rng.randi_range(50, 110):
+			var radius := clampf(4.5 + 1.5 * sin(s * 0.25 + n) + rng.randf_range(-0.5, 0.5), 3.0, 6.5)
+			_blob(Vector3i(p.round()), Vector3(radius, radius * 0.8, radius), Blocks.AIR, Blocks.AIR)
+			p += Vector3(cos(yaw) * cos(pitch), sin(pitch), sin(yaw) * cos(pitch)) * 2.5
+			yaw += rng.randf_range(-0.35, 0.35)
+			pitch = clampf(pitch + rng.randf_range(-0.15, 0.15), -0.45, 0.45) * 0.9
+			if p.x < 12.0 or p.x > SX - 12.0 or p.z < 12.0 or p.z > SZ - 12.0 or p.y < 14.0 or p.y > FLOOR_Y - 30.0:
 				break
 
 
-func _carve_sphere(center: Vector3, radius: float) -> void:
-	var r := ceili(radius)
-	var c := Vector3i(floori(center.x), floori(center.y), floori(center.z))
-	for dy in range(-r, r + 1):
-		for dz in range(-r, r + 1):
-			for dx in range(-r, r + 1):
-				var p := c + Vector3i(dx, dy, dz)
-				if not in_bounds(p) or p.y <= 1:
-					continue
-				if (Vector3(p) + Vector3(0.5, 0.5, 0.5)).distance_to(center) > radius:
-					continue
-				if p.y >= ground[column(p.x, p.z)] - 4:
-					continue
-				var i := index(p.x, p.y, p.z)
-				if blocks[i] != Blocks.BEDROCK:
-					blocks[i] = Blocks.AIR
-
-
-func _plant_trees(rng: RandomNumberGenerator) -> void:
-	var planted: Array[Vector2i] = []
-	var middle := Vector2(SX * 0.5, SZ * 0.5)
-	for attempt in 240:
-		if planted.size() >= 45:
-			break
-		var x := rng.randi_range(3, SX - 4)
-		var z := rng.randi_range(3, SZ - 4)
-		if Vector2(x, z).distance_to(middle) < 7.0:
-			continue
-		var h := ground[column(x, z)]
-		if blocks[index(x, h, z)] != Blocks.GRASS:
-			continue
-		var crowded := false
-		for p in planted:
-			if p.distance_squared_to(Vector2i(x, z)) < 16:
-				crowded = true
-				break
-		if crowded:
-			continue
-		planted.append(Vector2i(x, z))
-		var trunk := rng.randi_range(4, 6)
-		for y in range(h + 1, h + trunk + 1):
-			blocks[index(x, y, z)] = Blocks.LOG
-		var crown := h + trunk
-		for dy in range(-2, 2):
-			var r := 2 if dy < 0 else 1
-			for dz in range(-r, r + 1):
-				for dx in range(-r, r + 1):
-					if absi(dx) == r and absi(dz) == r and (dy >= 0 or rng.randf() < 0.5):
-						continue
-					var p := Vector3i(x + dx, crown + dy, z + dz)
-					if in_bounds(p) and blocks[index(p.x, p.y, p.z)] == Blocks.AIR:
-						blocks[index(p.x, p.y, p.z)] = Blocks.LEAVES
-
-
+# Relics are 2x2x2 cubes of glinting soil; rarer treasure comes in 4x3x3 chests with a gold band.
 func _place_treasures(rng: RandomNumberGenerator) -> void:
 	var types: Array[int] = [Treasures.CROWN]
 	for n in Treasures.PER_WORLD - 1:
@@ -464,16 +580,39 @@ func _place_treasures(rng: RandomNumberGenerator) -> void:
 	for t in types:
 		var info: Dictionary = Treasures.LIST[t]
 		var depth: Array = info["depth"]
-		for attempt in 40:
-			var x := rng.randi_range(2, SX - 3)
-			var z := rng.randi_range(2, SZ - 3)
-			var y := ground[column(x, z)] - rng.randi_range(depth[0], depth[1])
-			if y < 2:
-				continue
-			var i := index(x, y, z)
-			var b := blocks[i]
-			if b == Blocks.AIR or b == Blocks.BEDROCK or b == Blocks.LOG or b == Blocks.LEAVES or Blocks.is_treasure(b):
-				continue
-			blocks[i] = Blocks.CHEST if info["chest"] else Blocks.RELIC
-			treasures[i] = {"cell": Vector3i(x, y, z), "type": t}
-			break
+		var chest: bool = info["chest"]
+		var size := Vector3i(4, 3, 3) if chest else Vector3i(2, 2, 2)
+		if rng.randf() < 0.5:
+			size = Vector3i(size.z, size.y, size.x)
+		for attempt in 80:
+			var d := rng.randf_range(float(depth[0]), minf(float(depth[1]), 41.0))
+			var lo := Vector3i(rng.randi_range(8, SX - 8 - size.x), FLOOR_Y - int(d / VOXEL), rng.randi_range(8, SZ - 8 - size.z))
+			if _all_natural(lo, lo + size - Vector3i.ONE):
+				_bury(t, lo, size, chest)
+				break
+
+
+func _all_natural(lo: Vector3i, hi: Vector3i) -> bool:
+	for z in range(lo.z, hi.z + 1):
+		for x in range(lo.x, hi.x + 1):
+			for y in range(lo.y, hi.y + 1):
+				if not Blocks.is_natural(blocks[index(x, y, z)]):
+					return false
+	return true
+
+
+func _bury(t: int, lo: Vector3i, size: Vector3i, chest: bool) -> void:
+	var number := treasure_list.size()
+	var cells := PackedInt32Array()
+	for z in range(lo.z, lo.z + size.z):
+		for x in range(lo.x, lo.x + size.x):
+			for y in range(lo.y, lo.y + size.y):
+				var i := index(x, y, z)
+				var b := Blocks.RELIC
+				if chest:
+					b = Blocks.CHEST_TRIM if y == lo.y + 1 else Blocks.CHEST
+				blocks[i] = b
+				treasures[i] = number
+				cells.append(i)
+	var hi := lo + size - Vector3i.ONE
+	treasure_list.append({"type": t, "center": (Vector3(lo) + Vector3(size) * 0.5) * VOXEL, "cells": cells, "lo": lo, "hi": hi, "found": false})

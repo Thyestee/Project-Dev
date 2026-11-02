@@ -1,10 +1,10 @@
 extends CanvasLayer
 # Everything on screen: stats, the detector readout, the hotbar, messages, the treasure
-# journal and the loading, title and pause screens.
+# journal, the workbench and the loading, title and pause screens.
 
 const Blocks := preload("res://scripts/blocks.gd")
 const Treasures := preload("res://scripts/treasures.gd")
-const Textures := preload("res://scripts/textures.gd")
+const Upgrades := preload("res://scripts/upgrades.gd")
 
 const GOLD := Color(1.0, 0.84, 0.4)
 const TEXT := Color(0.93, 0.91, 0.86)
@@ -12,9 +12,10 @@ const DIM := Color(0.75, 0.75, 0.75)
 const SIGNAL_WIDTH := 230.0
 
 var game
-var _value_label: Label
+var _coins_label: Label
 var _found_label: Label
 var _depth_label: Label
+var _pick_label: Label
 var _target_label: Label
 var _detector_title: Label
 var _signal_fill: ColorRect
@@ -134,12 +135,14 @@ func _build_stats(root: Control) -> void:
 	root.add_child(panel)
 	var box := VBoxContainer.new()
 	panel.add_child(box)
-	_value_label = _label("", 18, GOLD)
+	_coins_label = _label("", 18, GOLD)
 	_found_label = _label("", 15)
 	_depth_label = _label("", 15, Color(0.78, 0.84, 0.9))
-	box.add_child(_value_label)
+	_pick_label = _label("", 13, DIM)
+	box.add_child(_coins_label)
 	box.add_child(_found_label)
 	box.add_child(_depth_label)
+	box.add_child(_pick_label)
 
 
 func _build_detector(root: Control) -> void:
@@ -187,12 +190,11 @@ func _build_hotbar(root: Control) -> void:
 		var slot := Panel.new()
 		slot.custom_minimum_size = Vector2(58, 58)
 		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		var icon := TextureRect.new()
-		icon.texture = ImageTexture.create_from_image(Textures.images[Blocks.TILE_SIDE[b]])
-		icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		icon.position = Vector2(11, 9)
-		icon.size = Vector2(36, 36)
+		var icon := ColorRect.new()
+		icon.color = Blocks.COLORS[b]
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		icon.position = Vector2(14, 12)
+		icon.size = Vector2(30, 30)
 		slot.add_child(icon)
 		var key := _label(str(i + 1), 11, Color(1, 1, 1, 0.6))
 		key.position = Vector2(5, 1)
@@ -269,10 +271,11 @@ func _build_overlay(root: Control) -> void:
 # --- Updates --------------------------------------------------------------------------
 
 func refresh() -> void:
-	var found_n: int = game.found_count()
-	var buried: int = game.world.treasures.size()
-	_value_label.text = "Treasure value: %s coins" % thousands(game.total_value)
-	_found_label.text = "Treasures found: %d / %d" % [found_n, found_n + buried]
+	var buried: int = game.world.remaining_treasures()
+	_coins_label.text = "Coins: %s" % thousands(game.coins)
+	_found_label.text = "Treasures found here: %d / %d" % [Treasures.PER_WORLD - buried, Treasures.PER_WORLD]
+	var head: Dictionary = Upgrades.HEADS[game.upgrades["head"]]
+	_pick_label.text = "%s pick  ·  %s  ·  %s" % [head["name"], Upgrades.GRIPS[game.upgrades["grip"]]["name"], Upgrades.SIZES[game.upgrades["size"]]["name"]]
 	var selected: int = game.hotbar_index
 	for i in _slots.size():
 		var b: int = Blocks.HOTBAR[i]
@@ -280,19 +283,25 @@ func refresh() -> void:
 		var slot: Dictionary = _slots[i]
 		var count: Label = slot["count"]
 		count.text = str(n)
-		var icon: TextureRect = slot["icon"]
+		var icon: ColorRect = slot["icon"]
 		icon.modulate = Color.WHITE if n > 0 else Color(1, 1, 1, 0.3)
 		var panel: Panel = slot["panel"]
 		panel.add_theme_stylebox_override("panel", _slot_selected_style if i == selected else _slot_style)
 	_block_name.text = Blocks.NAMES[Blocks.HOTBAR[selected]]
 
 
-func set_depth(metres: int) -> void:
-	_depth_label.text = "Depth: %d m" % metres if metres > 0 else "On the surface"
+func set_depth(metres: float, home: bool) -> void:
+	if home:
+		_depth_label.text = "In your room"
+	elif metres < 0.5:
+		_depth_label.text = "On the stairs"
+	else:
+		_depth_label.text = "Depth: %.1f m" % metres
 
 
-func set_target(text: String) -> void:
+func set_target(text: String, color := Color(1, 1, 1, 0.85)) -> void:
 	_target_label.text = text
+	_target_label.add_theme_color_override("font_color", color)
 
 
 func set_detector(on: bool, strength: float, beeped: bool) -> void:
@@ -347,9 +356,9 @@ func show_journal(open: bool) -> void:
 	_hide_find()
 	_clear(_journal_box)
 	var found_n: int = game.found_count()
-	var buried: int = game.world.treasures.size()
+	var buried: int = game.world.remaining_treasures()
 	_journal_box.add_child(_label("Treasure Journal", 28, GOLD))
-	_journal_box.add_child(_label("Total value %s coins  ·  %d found  ·  %d still buried in this world" % [thousands(game.total_value), found_n, buried], 15))
+	_journal_box.add_child(_label("%d found in all  ·  %d still buried at this dig site" % [found_n, buried], 15))
 	var grid := GridContainer.new()
 	grid.columns = 3
 	grid.add_theme_constant_override("h_separation", 22)
@@ -393,10 +402,31 @@ func _button_style(bg: Color, border: Color) -> StyleBoxFlat:
 	return sb
 
 
-func _show_overlay(title: String, lines: Array, buttons: Array) -> void:
+func _button(text: String, action: Callable, min_size := Vector2(280, 44), font_size := 18) -> Button:
+	var button := Button.new()
+	button.text = text
+	button.custom_minimum_size = min_size
+	button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	button.add_theme_font_size_override("font_size", font_size)
+	button.add_theme_stylebox_override("normal", _button_style(Color(0.2, 0.15, 0.1, 0.92), Color(0.55, 0.43, 0.24)))
+	button.add_theme_stylebox_override("hover", _button_style(Color(0.32, 0.24, 0.13, 0.95), GOLD))
+	button.add_theme_stylebox_override("pressed", _button_style(Color(0.14, 0.1, 0.06, 0.95), GOLD))
+	button.add_theme_stylebox_override("disabled", _button_style(Color(0.1, 0.09, 0.08, 0.8), Color(0.25, 0.22, 0.2)))
+	button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	button.add_theme_color_override("font_hover_color", GOLD)
+	button.add_theme_color_override("font_disabled_color", Color(0.45, 0.42, 0.4))
+	button.pressed.connect(action)
+	return button
+
+
+func _open_overlay() -> void:
 	_clear(_overlay_box)
 	_hide_find()
 	_overlay.visible = true
+
+
+func _show_overlay(title: String, lines: Array, buttons: Array) -> void:
+	_open_overlay()
 	_overlay_box.add_child(_centered(_label(title, 54, GOLD)))
 	for line: String in lines:
 		_overlay_box.add_child(_centered(_label(line, 17)))
@@ -405,18 +435,7 @@ func _show_overlay(title: String, lines: Array, buttons: Array) -> void:
 		gap.custom_minimum_size = Vector2(0, 12)
 		_overlay_box.add_child(gap)
 	for b: Array in buttons:
-		var button := Button.new()
-		button.text = b[0]
-		button.custom_minimum_size = Vector2(280, 44)
-		button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		button.add_theme_font_size_override("font_size", 18)
-		button.add_theme_stylebox_override("normal", _button_style(Color(0.2, 0.15, 0.1, 0.92), Color(0.55, 0.43, 0.24)))
-		button.add_theme_stylebox_override("hover", _button_style(Color(0.32, 0.24, 0.13, 0.95), GOLD))
-		button.add_theme_stylebox_override("pressed", _button_style(Color(0.14, 0.1, 0.06, 0.95), GOLD))
-		button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
-		button.add_theme_color_override("font_hover_color", GOLD)
-		button.pressed.connect(b[1])
-		_overlay_box.add_child(button)
+		_overlay_box.add_child(_button(b[0], b[1]))
 
 
 func show_loading(progress: float) -> void:
@@ -427,22 +446,22 @@ func show_loading(progress: float) -> void:
 
 
 const CONTROLS := [
-	"WASD move  ·  Space jump  ·  Shift sprint  ·  Mouse look",
-	"Left click dig  ·  Right click place a block  ·  1-7 or wheel pick a block",
-	"F metal detector  ·  Tab journal  ·  Esc pause",
+	"WASD move  ·  Space jump  ·  Shift sprint  ·  Ctrl crouch  ·  Mouse look",
+	"Left click dig  ·  Right click place blocks  ·  1-7 or wheel pick a block",
+	"F metal detector  ·  E workbench  ·  Tab journal  ·  Esc pause",
 ]
 
 
 func show_title(has_save: bool) -> void:
-	var lines: Array = ["Somewhere under this field, lost treasures are waiting.",
-		"Listen to your metal detector: the closer you get, the faster it beeps.", ""]
+	var lines: Array = ["Somewhere under your house, lost treasures are waiting.",
+		"Take the stairs down and listen to your metal detector: the faster it beeps, the closer you are.",
+		"Spend what you find on your pickaxe and your room at the workbench.", ""]
 	lines.append_array(CONTROLS)
 	var buttons: Array = [["Continue digging" if has_save else "Start digging", Callable(game, "start_playing")]]
 	if has_save:
-		var found_n: int = game.found_count()
 		lines.append("")
-		lines.append("So far: %d treasures worth %s coins, %d still buried." % [found_n, thousands(game.total_value), game.world.treasures.size()])
-		buttons.append(["New world", Callable(game, "ask_new_world")])
+		lines.append("So far: %d treasures found, %s coins to spend, %d still buried here." % [game.found_count(), thousands(game.coins), game.world.remaining_treasures()])
+		buttons.append(["New dig site", Callable(game, "ask_new_world")])
 	_show_overlay("DEEP FINDS", lines, buttons)
 
 
@@ -451,14 +470,96 @@ func show_pause() -> void:
 	lines.append_array(CONTROLS)
 	_show_overlay("Paused", lines, [
 		["Resume", Callable(game, "resume")],
-		["Return to the surface", Callable(game, "return_to_surface")],
-		["New world", Callable(game, "ask_new_world")],
+		["Return to your room", Callable(game, "return_to_room")],
+		["New dig site", Callable(game, "ask_new_world")],
 		["Save and quit", Callable(game, "save_and_quit")],
 	])
 
 
 func show_new_world_confirm() -> void:
-	_show_overlay("New world?", ["This world and everything you've found in it will be lost."], [
-		["Yes, start a new world", Callable(game, "new_world")],
+	_show_overlay("New dig site?", ["The ground is filled back in and new treasure is buried.", "Your coins, pickaxe, room and journal stay with you."], [
+		["Yes, new dig site", Callable(game, "new_world")],
 		["Cancel", Callable(game, "cancel_new_world")],
 	])
+
+
+# --- The workbench -------------------------------------------------------------------------
+
+func show_shop() -> void:
+	_open_overlay()
+	_overlay_box.add_child(_centered(_label("Workbench", 44, GOLD)))
+	_overlay_box.add_child(_centered(_label("Coins: %s" % thousands(game.coins), 20, GOLD)))
+	var columns := HBoxContainer.new()
+	columns.add_theme_constant_override("separation", 40)
+	_overlay_box.add_child(columns)
+
+	var pick := _shop_column("Your pickaxe")
+	columns.add_child(pick)
+	var heads: Array = Upgrades.HEADS
+	var head: int = game.upgrades["head"]
+	var head_next := "%s head: also digs %s." % [heads[head + 1]["name"], heads[head + 1]["digs"]] if head + 1 < heads.size() else ""
+	pick.add_child(_pickaxe_row("head", "Pick head: %s" % heads[head]["name"], "Digs %s." % heads[head]["digs"] if head == 0 else "Digs up to %s." % heads[head]["digs"], head_next))
+	var grips: Array = Upgrades.GRIPS
+	var grip: int = game.upgrades["grip"]
+	var grip_next := "%s: swings %.2fx as fast." % [grips[grip + 1]["name"], grips[grip + 1]["speed"]] if grip + 1 < grips.size() else ""
+	pick.add_child(_pickaxe_row("grip", grips[grip]["name"], "Swing speed %.2fx." % grips[grip]["speed"], grip_next))
+	var sizes: Array = Upgrades.SIZES
+	var size: int = game.upgrades["size"]
+	var size_next := "%s: clears more ground every swing." % sizes[size + 1]["name"] if size + 1 < sizes.size() else ""
+	pick.add_child(_pickaxe_row("size", sizes[size]["name"], "Clears %.1f m across." % (sizes[size]["radius"] * 2.0 * 0.25), size_next))
+
+	var room := _shop_column("Your room")
+	columns.add_child(room)
+	for item: Dictionary in Upgrades.ROOM:
+		var id: String = item["id"]
+		if game.room_owned.has(id):
+			room.add_child(_shop_row(item["name"], item["text"], -1, Callable(), "Owned"))
+		else:
+			room.add_child(_shop_row(item["name"], item["text"], item["cost"], Callable(game, "buy_room").bind(id), "Buy"))
+
+	_overlay_box.add_child(_button("Back to digging", Callable(game, "resume"), Vector2(240, 40), 16))
+	_overlay_box.add_child(_centered(_label("E or Esc to close", 13, DIM)))
+
+
+func _shop_column(title: String) -> VBoxContainer:
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 8)
+	column.add_child(_label(title, 22, GOLD))
+	return column
+
+
+func _pickaxe_row(kind: String, title: String, now: String, next: String) -> HBoxContainer:
+	var list: Array = Upgrades.PICKAXE[kind]
+	var level: int = game.upgrades[kind]
+	if level + 1 >= list.size():
+		return _shop_row(title, now + " Fully upgraded.", -1, Callable(), "Maxed")
+	return _shop_row(title, now + "\nNext: " + next, list[level + 1]["cost"], Callable(game, "buy_pickaxe").bind(kind), "Upgrade")
+
+
+func _shop_row(title: String, text: String, cost: int, action: Callable, verb: String) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	var info := VBoxContainer.new()
+	info.add_theme_constant_override("separation", 0)
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info.add_child(_label(title, 16))
+	info.add_child(_wrapped(_label(text, 12, DIM), 290))
+	row.add_child(info)
+	if cost < 0:
+		var done := _label(verb, 15, Color(0.55, 0.85, 0.5))
+		done.custom_minimum_size = Vector2(212, 0)
+		done.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		done.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(done)
+		return row
+	var affordable: bool = game.coins >= cost
+	var price := _label("%s coins" % thousands(cost), 14, GOLD if affordable else Color(0.8, 0.5, 0.45))
+	price.custom_minimum_size = Vector2(100, 0)
+	price.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	price.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(price)
+	var button := _button(verb, action, Vector2(100, 34), 15)
+	button.disabled = not affordable
+	button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(button)
+	return row

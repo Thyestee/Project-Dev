@@ -13,6 +13,8 @@ func _ready() -> void:
 	_add("place", _noise(0.09, 0.55, 450.0, 40.0))
 	_add("step", _noise(0.07, 0.3, 350.0, 55.0))
 	_add("treasure", _chime([660.0, 830.0, 990.0, 1320.0]))
+	_add("clink", _tone(1900.0, 0.14, 0.35, 28.0))
+	_add("buy", _chime([990.0, 1480.0]))
 
 
 func play(sound: String, pitch := 1.0, volume_db := 0.0) -> void:
