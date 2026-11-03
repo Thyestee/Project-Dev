@@ -1,6 +1,7 @@
 extends RefCounted
-# Your house at the top of the world, the brick staircase down to the dig site, the workbench and
-# the forge, the decorations and the furniture you place yourself, all built out of blocks.
+# Your house at the top of the world, the brick staircase down to the dig site, the workbench, the
+# forge and the rope lift, the decorations and the furniture you place yourself, all built out of
+# blocks.
 # Coordinates are cells; `w` is the world.
 
 const Blocks := preload("res://scripts/blocks.gd")
@@ -23,6 +24,11 @@ const BENCH_LO := Vector3i(DOOR_X - 27, FLOOR, Z0 - 1)
 const BENCH_HI := Vector3i(DOOR_X - 10, FLOOR + 16, Z0 + 5)
 const FORGE_LO := Vector3i(DOOR_X + 9, FLOOR, Z0)
 const FORGE_HI := Vector3i(DOOR_X + 24, CEIL - 1, Z0 + 6)
+const LIFT_LO := Vector3i(DOOR_X + 7, FLOOR, Z0)        # the rope lift between the door and the forge
+const LIFT_HI := Vector3i(DOOR_X + 8, FLOOR + 16, Z0 + 1)
+# The house, the stairs and the dig site, and the ground round them: no caves or hidden rooms here.
+const EXCLUDE_LO := Vector3i(100, FLOOR - 136, 48)
+const EXCLUDE_HI := Vector3i(284, FLOOR + 40, 372)
 const SPAWN := Vector3(192.0, 344.0, 262.0)
 const SHELF_SLOTS := 12        # one per kind of treasure
 
@@ -55,6 +61,10 @@ static func is_workbench(c: Vector3i) -> bool:
 
 static func is_forge(c: Vector3i) -> bool:
 	return c.x >= FORGE_LO.x and c.x <= FORGE_HI.x and c.y >= FORGE_LO.y and c.y <= FORGE_HI.y and c.z >= FORGE_LO.z and c.z <= FORGE_HI.z
+
+
+static func is_lift(c: Vector3i) -> bool:
+	return c.x >= LIFT_LO.x and c.x <= LIFT_HI.x and c.y >= LIFT_LO.y and c.y <= LIFT_HI.y and c.z >= LIFT_LO.z and c.z <= LIFT_HI.z
 
 
 static func spawn_point() -> Vector3:
@@ -116,6 +126,7 @@ static func build_shell(w, tier: int) -> void:
 	_doorframe(w)
 	_workbench(w)
 	_forge(w)
+	_lift(w)
 	hanging_lantern(w, tier, Blocks.LANTERN)
 
 
@@ -225,6 +236,16 @@ static func _box(w, o: Vector3i, lo: Vector3i, hi: Vector3i, b: int) -> void:
 	w.fill(o + lo, o + hi, b)
 
 
+# A coil of rope on a winch beside the door: it lowers you straight back to wherever you were
+# when you last went home.
+static func _lift(w) -> void:
+	var o := LIFT_LO
+	_box(w, o, Vector3i(0, 15, 0), Vector3i(1, 16, 1), Blocks.BEAM)
+	_box(w, o, Vector3i(0, 3, 0), Vector3i(1, 14, 0), Blocks.ROPE)
+	_box(w, o, Vector3i(0, 8, 1), Vector3i(1, 9, 1), Blocks.IRON)
+	_box(w, o, Vector3i(0, 0, 0), Vector3i(1, 2, 1), Blocks.CRATE)
+
+
 static func hanging_lantern(w, tier: int, b: int) -> void:
 	var c := center(tier)
 	var frame := Blocks.BEAM if b != Blocks.AIR else Blocks.AIR
@@ -268,7 +289,7 @@ static func lights(owned: Array, tier: int) -> Array:
 
 # Like put, but never over furniture you've placed.
 static func _dput(w, x: int, y: int, z: int, b: int) -> void:
-	if not w.furniture.has(w.index(x, y, z)):
+	if not w.furniture.has(w.key(x, y, z)):
 		w.put(x, y, z, b)
 
 
@@ -469,13 +490,13 @@ static func can_place_furniture(w, type: String, x: int, z: int, rot: int, tier:
 	return true
 
 
-# Whether a piece of furniture stands where the workbench or the forge is. Only furniture placed
-# before the forge was built can.
+# Whether a piece of furniture stands where the workbench, the forge or the rope lift is. Only
+# furniture placed before they were built can.
 static func blocks_fixture(rec: Dictionary) -> bool:
 	var size := furniture_size(rec["type"], rec["rot"])
 	var x0: int = rec["x"]
 	var z0: int = rec["z"]
-	for box: Array in [[BENCH_LO, BENCH_HI], [FORGE_LO, FORGE_HI]]:
+	for box: Array in [[BENCH_LO, BENCH_HI], [FORGE_LO, FORGE_HI], [LIFT_LO, LIFT_HI]]:
 		var lo: Vector3i = box[0]
 		var hi: Vector3i = box[1]
 		if x0 <= hi.x and x0 + size.x - 1 >= lo.x and z0 <= hi.z and z0 + size.z - 1 >= lo.z:
@@ -580,7 +601,7 @@ static func _fbox(w, f: Dictionary, lo: Vector3i, hi: Vector3i, b: int) -> void:
 			for x in range(lo.x, hi.x + 1):
 				var c: Vector3i = f["base"] + _turn(f["size"], f["rot"], Vector3i(x, y, z))
 				w.put(c.x, c.y, c.z, b)
-				w.furniture[w.index(c.x, c.y, c.z)] = f["id"]
+				w.furniture[w.key(c.x, c.y, c.z)] = f["id"]
 
 
 static func remove_furniture(w, rec: Dictionary) -> void:
@@ -590,7 +611,7 @@ static func remove_furniture(w, rec: Dictionary) -> void:
 	for z in range(lo.z, hi.z + 1):
 		for x in range(lo.x, hi.x + 1):
 			for y in range(lo.y, hi.y + 1):
-				var i: int = w.index(x, y, z)
+				var i: int = w.key(x, y, z)
 				if w.furniture.get(i, -1) == rec["id"]:
 					w.furniture.erase(i)
 					w.put(x, y, z, Blocks.AIR)

@@ -1,7 +1,8 @@
 extends Node3D
 # You: first-person walking (ducking and crawling through tight spots on your own), health and
-# stamina, and what you hold: the pickaxe, the leveller, a sword or a mace (with your shield on
-# the other arm), a bow, or explosives.
+# stamina, and what you hold: the pickaxe (left click digs, right click flattens), a sword or a
+# mace (with your shield on the other arm), or explosives. Only digging, swinging a weapon and
+# blocking with your shield tire you out; running and jumping never do.
 
 const Blocks := preload("res://scripts/blocks.gd")
 const Items := preload("res://scripts/items.gd")
@@ -26,11 +27,9 @@ const REACH := 4.0
 const MOUSE_SENSITIVITY := 0.0025
 const BASE_HEALTH := 100.0
 const BASE_STAMINA := 100.0
-const SPRINT_COST := 16.0     # stamina per second
-const JUMP_COST := 6.0
 const STAMINA_REGEN := 28.0
-const SLOTS := ["pickaxe", "leveler", "sword", "mace", "bow", "bomb"]
-const SLOT_NAMES := ["Pickaxe", "Leveller", "Sword", "Mace", "Bow", "Explosives"]
+const SLOTS := ["pickaxe", "sword", "mace", "bomb"]
+const SLOT_NAMES := ["Pickaxe", "Sword", "Mace", "Explosives"]
 
 # The pickaxe's poses as [grip position, rotation]: resting, raised over your shoulder, and the
 # moment it strikes. Its head runs front to back, so the front spike leads the swing and bites
@@ -43,10 +42,7 @@ const SWORD_POS := Vector3(0.36, -0.5, -0.62)
 const SWORD_ROT := Vector3(-0.55, -0.2, -0.25)
 const MACE_POS := Vector3(0.38, -0.58, -0.64)
 const MACE_ROT := Vector3(-0.45, -0.3, 0.2)
-const TROWEL_POS := Vector3(0.34, -0.42, -0.58)
-const TROWEL_ROT := Vector3(-0.35, -0.25, 0.1)
 const BOMB_POS := Vector3(0.3, -0.38, -0.56)
-const BOW_POS := Vector3(0.06, -0.3, -0.6)
 const SHIELD_POS := Vector3(-0.46, -0.48, -0.62)
 const SHIELD_UP := Vector3(-0.12, -0.26, -0.44)
 
@@ -73,14 +69,10 @@ var _acting := false
 var _action := 0.0        # how far through the current swing, 0 to 1
 var _hit_done := false
 var _combo := 0
-var _drawing := false
-var _draw := 0.0
+var _flattening := false  # the swing under way is a flattening one (right click)
 var _follow := 0.0        # the pickaxe's follow-through after it lands, 1 down to 0
-var _level_timer := 0.0
 var _throw_timer := 0.0
-var _swipe := 0.0
 var _throw_anim := 0.0
-var _bow_kick := 0.0
 var _block_blend := 0.0
 var _stamina_delay := 0.0
 var _regen_delay := 0.0
@@ -97,8 +89,6 @@ var _bob := 0.0
 var _step_dist := 0.0
 var _hand: Node3D
 var _tools := {}          # slot name -> Node3D in your right hand
-var _bow: Node3D
-var _nocked: Node3D
 var _shield: Node3D
 var _line_mat: StandardMaterial3D
 var _outline: MeshInstance3D
@@ -162,8 +152,6 @@ func set_active(active: bool) -> void:
 	_active = active
 	_armed = false
 	_acting = false
-	_drawing = false
-	_draw = 0.0
 	_action = 0.0
 	blocking = false
 	if not active:
@@ -215,8 +203,6 @@ func heal(amount: float) -> void:
 func select(i: int) -> void:
 	slot = posmod(i, SLOTS.size())
 	_acting = false
-	_drawing = false
-	_draw = 0.0
 	_action = 0.0
 	_update_visibility()
 
@@ -336,25 +322,17 @@ func _walk(delta: float) -> void:
 		speed = CRAWL_SPEED
 	elif tall < HEIGHT - 0.05:
 		speed = CROUCH_SPEED
-	elif Input.is_action_pressed("sprint") and input.length() > 0.1 and not exhausted and not blocking and not _drawing:
+	elif Input.is_action_pressed("sprint") and input.length() > 0.1 and not blocking:
 		speed = SPRINT_SPEED
-		stamina = maxf(0.0, stamina - SPRINT_COST * delta)
-		_stamina_delay = 0.5
-		if stamina <= 0.0:
-			exhausted = true
 	if blocking:
 		speed *= 0.45 * (1.0 + game.global_affix("swift") / 100.0)
-	if _drawing:
-		speed *= 0.55
 	speed *= 1.0 + game.global_affix("swift") / 100.0
 	var v: Vector3 = body.velocity
 	var blend := 1.0 - exp(-delta * (12.0 if body.on_floor else 3.0))
 	v.x = lerpf(v.x, wish.x * speed, blend)
 	v.z = lerpf(v.z, wish.z * speed, blend)
-	if body.on_floor and not crouching and tall > CROUCH_HEIGHT and Input.is_action_pressed("jump") and stamina > 0.0:
+	if body.on_floor and not crouching and tall > CROUCH_HEIGHT and Input.is_action_pressed("jump"):
 		v.y = JUMP_SPEED
-		stamina = maxf(0.0, stamina - JUMP_COST)
-		_stamina_delay = 0.5
 	v.y = maxf(v.y - GRAVITY * delta, -40.0)
 	body.velocity = v
 	body.move(v * delta)
@@ -387,37 +365,37 @@ func _use_tool(delta: float) -> void:
 	if not hit.is_empty() and (target.is_empty() or float(hit["dist"]) < float(target["dist"])):
 		target_enemy = hit["enemy"]
 	var kind: String = SLOTS[slot]
-	_show_aim(kind)
-	game.show_target()
 	var lmb := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 	var rmb := Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
 	if not lmb and not rmb:
 		_armed = true
 	var use := lmb and _armed
+	var flat := rmb and _armed and not lmb
 	blocking = false
-	_plane.visible = false
+	_show_aim(kind, flat or (_acting and _flattening))
+	game.show_target()
 	match kind:
 		"pickaxe":
-			_use_pickaxe(delta, use)
-		"leveler":
-			_use_leveler(delta, use)
+			_use_pickaxe(delta, use, flat)
 		"sword", "mace":
 			blocking = rmb and _armed and not game.equipped["shield"].is_empty() and not exhausted and not _acting
 			_use_melee(delta, use and not blocking, kind)
-		"bow":
-			_use_bow(delta, use)
 		"bomb":
 			_use_bomb(delta, use)
 
 
-# With the pickaxe: a ring on the ground where the next blow will dent it, or an outline round a
-# built block.
-func _show_aim(kind: String) -> void:
+# With the pickaxe: a ring on the ground where the next blow will dent it, the disc it will
+# flatten while you hold the right button, or an outline round a built block.
+func _show_aim(kind: String, flat: bool) -> void:
 	_outline.visible = false
 	_ring.visible = false
+	_plane.visible = false
 	if kind != "pickaxe" or target.is_empty() or target_enemy != null:
 		return
-	if Blocks.is_ground(target["block"]):
+	if flat and target["face"] != Vector3i.ZERO:
+		_plane.visible = true
+		_draw_plane(target["point"], target["face"], game.dig_radius())
+	elif Blocks.is_ground(target["block"]):
 		var up: Vector3 = target["normal"]
 		var side := up.cross(Vector3.UP if absf(up.y) < 0.9 else Vector3.RIGHT).normalized()
 		var r: float = game.dig_radius() * World.VOXEL * 0.75
@@ -434,15 +412,19 @@ func _note_tired() -> void:
 		game.toast("Too tired! Wait for your stamina to come back.", Color(1.0, 0.75, 0.45))
 
 
-func _use_pickaxe(delta: float, held: bool) -> void:
+# Hold the left button to dig, the right to flatten: each swing lands when it's gone all the way
+# round, and the next one starts straight after.
+func _use_pickaxe(delta: float, held: bool, flat: bool) -> void:
 	var item: Dictionary = game.equipped["pickaxe"]
-	if held:
+	if held or flat:
+		if not _acting:
+			_flattening = flat and not held
 		_acting = true
 		var t := 0.6
-		if target_enemy != null:
-			t = Items.attack_time(item) / float(Catalog.GRIPS[game.workshop["grip"]]["speed"])
+		if target_enemy != null and not _flattening:
+			t = Items.attack_time(item)
 		elif not target.is_empty() and float(target["dist"]) <= REACH:
-			t = game.swing_time(target["block"])
+			t = game.swing_time(target["block"]) * (1.25 if _flattening else 1.0)
 		if exhausted:
 			t /= 0.55
 		if _hitstop <= 0.0:
@@ -451,38 +433,30 @@ func _use_pickaxe(delta: float, held: bool) -> void:
 			_action = 0.0
 			_follow = 1.0
 			spend(Items.stamina_cost(item))
-			if target_enemy != null:
+			if _flattening:
+				if not target.is_empty() and target["face"] != Vector3i.ZERO and target_enemy == null:
+					game.on_flatten(target)
+				else:
+					game.sfx.play("swing", randf_range(1.1, 1.3), -8.0)
+			elif target_enemy != null:
 				game.melee_hit(target_enemy, item, Items.damage(item), {"knockback": 3.0})
 				impact(0.7, false)
 			elif not target.is_empty():
 				game.on_swing_hit(target)
 			else:
 				game.sfx.play("swing", randf_range(1.1, 1.3), -8.0)
+			_flattening = flat and not held
 	else:
 		_acting = false
+		_flattening = false
 		_action = move_toward(_action, 0.0, delta * 3.0)
-
-
-# The flatten tool: one click levels a square of ground with the face you're looking at.
-func _use_leveler(delta: float, held: bool) -> void:
-	_level_timer -= delta
-	var half: int = game.level_half()
-	var ok: bool = not target.is_empty() and target["face"] != Vector3i.ZERO and target_enemy == null
-	_plane.visible = ok
-	if ok:
-		_draw_plane(target["point"], target["face"], half)
-	if held and ok and _level_timer <= 0.0:
-		_level_timer = 0.45
-		_swipe = 1.0
-		game.on_level(target)
-		_armed = false
 
 
 func _use_melee(delta: float, held: bool, kind: String) -> void:
 	var item: Dictionary = game.equipped[kind]
 	if item.is_empty():
 		if held:
-			game.toast("You don't have a %s yet. Make one at your forge, or find one in a hidden room." % kind)
+			game.toast("You don't have a %s yet. They turn up in the chests of hidden rooms." % kind)
 			_armed = false
 		return
 	if _acting:
@@ -532,50 +506,6 @@ func _strike(kind: String, item: Dictionary) -> void:
 		impact(0.5 if kind == "sword" else 0.9, false)
 		if legend == "earthshaker":
 			game.earthshake(item, targets[0].body.position, damage)
-
-
-func _use_bow(delta: float, held: bool) -> void:
-	var item: Dictionary = game.equipped["bow"]
-	if item.is_empty():
-		if held:
-			game.toast("You don't have a bow yet. Buy one at the workbench, or find one in a hidden room.")
-			_armed = false
-		return
-	if held:
-		if not _drawing:
-			if game.supplies["arrows"] <= 0:
-				game.toast("Out of arrows. Buy more at the workbench, or pick up the ones you've shot.")
-				_armed = false
-				return
-			_drawing = true
-			_draw = 0.0
-			game.sfx.play("draw", randf_range(0.95, 1.05), -6.0)
-		_draw = minf(1.0, _draw + delta / Items.attack_time(item))
-	elif _drawing:
-		_drawing = false
-		if _draw >= 0.2:
-			_shoot(item, _draw)
-		_draw = 0.0
-
-
-func _shoot(item: Dictionary, power: float) -> void:
-	if not spend(Items.stamina_cost(item)):
-		power *= 0.6
-	var from := eye()
-	var dir := forward()
-	var speed := 18.0 + 30.0 * power
-	var info := {"item": item, "damage": Items.damage(item) * (0.25 + 0.75 * power), "pierce": int(Items.affix(item, "pierce")), "blast": Items.legend(item) == "blast"}
-	var dirs: Array[Vector3] = [dir]
-	if Items.legend(item) == "volley":
-		var up := camera.global_transform.basis.y
-		for a: float in [-0.2, -0.1, 0.1, 0.2]:
-			dirs.append(dir.rotated(up, a))
-	for d in dirs:
-		game.projectiles.shoot(from + d * 0.45 - camera.global_transform.basis.y * 0.05, d * speed, true, info.duplicate())
-	game.use_arrow(item)
-	game.sfx.play("twang", randf_range(0.95, 1.1))
-	_bow_kick = 1.0
-	_kick += 0.015 * power
 
 
 func _use_bomb(delta: float, held: bool) -> void:
@@ -669,25 +599,16 @@ func refresh_view() -> void:
 	for n: Node3D in _tools.values():
 		n.queue_free()
 	_tools.clear()
-	if _bow:
-		_bow.queue_free()
-		_bow = null
 	if _shield:
 		_shield.queue_free()
 		_shield = null
 	_tools["pickaxe"] = _view_node(_hand, _pickaxe_boxes(game.equipped["pickaxe"]))
-	_tools["leveler"] = _view_node(_hand, _trowel_boxes())
 	if not game.equipped["sword"].is_empty():
 		_tools["sword"] = _view_node(_hand, _sword_boxes(game.equipped["sword"]))
 	if not game.equipped["mace"].is_empty():
 		_tools["mace"] = _view_node(_hand, _mace_boxes(game.equipped["mace"]))
 	_tools["bomb"] = _view_node(_hand, [])
 	_refresh_bomb()
-	if not game.equipped["bow"].is_empty():
-		_bow = _view_node(camera, _bow_boxes(game.equipped["bow"]))
-		_nocked = _view_node(_bow, [[Vector3(0, 0, -0.1), Vector3(0.012, 0.012, 0.62), Color(0.62, 0.45, 0.28)],
-			[Vector3(0, 0, -0.43), Vector3(0.03, 0.03, 0.06), Color(0.62, 0.64, 0.68)],
-			[Vector3(0, 0.02, 0.17), Vector3(0.005, 0.035, 0.08), Color(0.92, 0.9, 0.86)]])
 	if not game.equipped["shield"].is_empty():
 		_shield = _view_node(camera, _shield_boxes(game.equipped["shield"]))
 	_update_visibility()
@@ -724,8 +645,6 @@ func _update_visibility() -> void:
 	var kind: String = SLOTS[slot]
 	for k: String in _tools:
 		_tools[k].visible = k == kind
-	if _bow:
-		_bow.visible = kind == "bow"
 	if _shield:
 		_shield.visible = kind == "sword" or kind == "mace"
 
@@ -750,14 +669,6 @@ func _pickaxe_boxes(item: Dictionary) -> Array:
 	if item["rarity"] > 0:
 		boxes.append([Vector3(0, 0.46, 0), Vector3(0.046, 0.03, 0.046), Items.color(item), 0.5])
 	return boxes
-
-
-func _trowel_boxes() -> Array:
-	return [
-		[Vector3(0, 0, 0), Vector3(0.04, 0.16, 0.04), Color(0.55, 0.37, 0.21)],
-		[Vector3(0, 0.1, -0.03), Vector3(0.016, 0.05, 0.07), Color(0.35, 0.35, 0.37)],
-		[Vector3(0, 0.125, -0.18), Vector3(0.17, 0.012, 0.26), Color(0.7, 0.72, 0.76)],
-	]
 
 
 func _sword_boxes(item: Dictionary) -> Array:
@@ -791,27 +702,9 @@ func _mace_boxes(item: Dictionary) -> Array:
 	]
 
 
-func _bow_boxes(item: Dictionary) -> Array:
-	var wood: Color = Items.WOOD_COLORS[item["tier"]]
-	var g := _glow(item)
-	# Limbs sweep forward from the grip in three pieces each, so the curve shows.
-	return [
-		[Vector3(0, 0, 0), Vector3(0.05, 0.13, 0.055), Color(0.3, 0.2, 0.12)],
-		[Vector3(0, 0.14, -0.015), Vector3(0.042, 0.17, 0.04), wood, g, Vector3(-0.12, 0, 0)],
-		[Vector3(0, 0.29, -0.045), Vector3(0.036, 0.16, 0.034), wood, g, Vector3(-0.32, 0, 0)],
-		[Vector3(0, 0.41, -0.09), Vector3(0.03, 0.12, 0.03), wood, g, Vector3(-0.55, 0, 0)],
-		[Vector3(0, -0.14, -0.015), Vector3(0.042, 0.17, 0.04), wood, g, Vector3(0.12, 0, 0)],
-		[Vector3(0, -0.29, -0.045), Vector3(0.036, 0.16, 0.034), wood, g, Vector3(0.32, 0, 0)],
-		[Vector3(0, -0.41, -0.09), Vector3(0.03, 0.12, 0.03), wood, g, Vector3(0.55, 0, 0)],
-		[Vector3(0, 0.47, -0.12), Vector3(0.034, 0.04, 0.034), Items.color(item), 0.4],
-		[Vector3(0, -0.47, -0.12), Vector3(0.034, 0.04, 0.034), Items.color(item), 0.4],
-		[Vector3(0, 0, 0.0), Vector3(0.006, 0.92, 0.006), Color(0.9, 0.9, 0.85), 0.0, Vector3(0, 0, 0)],
-	]
-
-
 func _shield_boxes(item: Dictionary) -> Array:
 	var tier: int = item["tier"]
-	var face: Color = Items.WOOD_COLORS[0] if tier == 0 else Items.TIER_COLORS[tier].darkened(0.2)
+	var face: Color = Items.TIER_COLORS[0] if tier == 0 else Items.TIER_COLORS[tier].darkened(0.2)
 	var rim: Color = Color(0.4, 0.38, 0.36) if tier == 0 else Items.TIER_COLORS[tier]
 	var leather := Color(0.35, 0.22, 0.13)
 	var g := _glow(item)
@@ -841,9 +734,7 @@ func _animate_view(delta: float) -> void:
 	# The bounce after a hit is a stiff spring.
 	_recoil_vel += (-220.0 * _recoil - 18.0 * _recoil_vel) * delta
 	_recoil += _recoil_vel * delta
-	_swipe = move_toward(_swipe, 0.0, delta * 3.0)
 	_throw_anim = move_toward(_throw_anim, 0.0, delta * 2.5)
-	_bow_kick = move_toward(_bow_kick, 0.0, delta * 5.0)
 	_block_blend = move_toward(_block_blend, 1.0 if blocking else 0.0, delta * 8.0)
 	var tool: Node3D = _tools.get(kind)
 	match kind:
@@ -858,12 +749,10 @@ func _animate_view(delta: float) -> void:
 			lift = lerpf(lift, -1.0, _follow * _follow)
 			var pose := _pick_pose(lift)
 			var rot: Vector3 = pose[1]
-			tool.position = pose[0] + bob + sway + Vector3(0.0, _recoil * 0.03, _recoil * 0.03)
-			tool.rotation = rot + Vector3(_recoil * 0.35, 0.0, 0.0)
-		"leveler":
-			var s := sin(_swipe * PI)
-			tool.rotation = TROWEL_ROT + Vector3(-0.6 * s, 0.5 * s, 0.0)
-			tool.position = TROWEL_POS + bob + sway + Vector3(-0.12 * s, -0.04 * s, -0.18 * s)
+			# Flattening swings come down flatter, the head skimming the surface.
+			var skim := 0.45 if _flattening else 0.0
+			tool.position = pose[0] + bob + sway + Vector3(0.0, _recoil * 0.03 + 0.06 * skim, _recoil * 0.03)
+			tool.rotation = rot + Vector3(_recoil * 0.35 + skim * maxf(-lift, 0.0), 0.0, -skim * 0.5)
 		"sword":
 			if tool:
 				var s := 0.0
@@ -897,15 +786,6 @@ func _animate_view(delta: float) -> void:
 			tool.rotation = Vector3(-0.2 - 1.2 * s, -0.3, 0.2)
 			tool.position = BOMB_POS + bob + sway + Vector3(0.0, 0.1 * s, 0.15 * s)
 			tool.visible = _throw_anim < 0.5 and int(game.supplies[game.selected_explosive()]) > 0
-	if _bow and _bow.visible:
-		var d := _draw
-		# Held a little left of centre, turned so you see the curve of the limbs, and canted
-		# more as you draw.
-		_bow.position = BOW_POS.lerp(Vector3(-0.04, -0.17, -0.48), d) + bob + sway + Vector3(0.0, 0.0, -0.04 * _bow_kick)
-		_bow.rotation = Vector3(0.05, -0.55 + 0.25 * d, 0.25 + 0.1 * d)
-		_nocked.visible = _drawing
-		_nocked.position = Vector3(0.0, 0.0, 0.03 + 0.22 * d)
-		_nocked.rotation.y = 0.55 - 0.25 * d
 	if _shield and _shield.visible:
 		var b := _block_blend
 		_shield.position = SHIELD_POS.lerp(SHIELD_UP, b) + bob * 0.6 + Vector3(0.0, 0.0, 0.02 * _recoil)
@@ -930,16 +810,15 @@ func _update_camera(delta: float) -> void:
 	var sy := (sin(t * 41.0 + 2.1) + sin(t * 59.0)) * 0.5 * shake_amount * 0.05
 	var sz := sin(t * 47.0 + 0.7) * shake_amount * 0.04
 	camera.rotation = Vector3(pitch + _kick + sx, sy, sz)
-	var fov := 75.0 - 8.0 * _draw
-	camera.fov = lerpf(camera.fov, fov, 1.0 - exp(-delta * 10.0))
 	var ground_speed := Vector2(body.velocity.x, body.velocity.z).length()
 	camera.position.y = _eye + _eye_offset + sin(_bob) * 0.035 * clampf(ground_speed / WALK_SPEED, 0.0, 1.0)
 
 
 # --- Outlines -----------------------------------------------------------------------------------
 
-# The square the leveller will flatten, where the new surface will be (see World.flatten).
-func _draw_plane(point: Vector3, face: Vector3i, half: int) -> void:
+# The disc a flattening blow will level, where the new surface will be (see World.flatten):
+# `radius` cells across, the same as the pickaxe's dent.
+func _draw_plane(point: Vector3, face: Vector3i, radius: float) -> void:
 	var a := 0 if face.x != 0 else (1 if face.y != 0 else 2)
 	var u := (a + 1) % 3
 	var v := (a + 2) % 3
@@ -949,17 +828,17 @@ func _draw_plane(point: Vector3, face: Vector3i, half: int) -> void:
 	var cv := floorf(c[v])
 	_plane_mesh.clear_surfaces()
 	_plane_mesh.surface_begin(Mesh.PRIMITIVE_LINES, _line_mat)
-	for inset: float in [0.0, 0.25]:
-		var corners: Array[Vector3] = []
-		for k: Vector2 in [Vector2(-1, -1), Vector2(1, -1), Vector2(1, 1), Vector2(-1, 1)]:
+	for inset: float in [0.0, 0.35]:
+		var points: Array[Vector3] = []
+		for k in 24:
 			var p := Vector3.ZERO
 			p[a] = level
-			p[u] = cu + k.x * (half - inset)
-			p[v] = cv + k.y * (half - inset)
-			corners.append(p * World.VOXEL)
-		for k in 4:
-			_plane_mesh.surface_add_vertex(corners[k])
-			_plane_mesh.surface_add_vertex(corners[(k + 1) % 4])
+			p[u] = cu + cos(k * TAU / 24.0) * (radius - inset)
+			p[v] = cv + sin(k * TAU / 24.0) * (radius - inset)
+			points.append(p * World.VOXEL)
+		for k in 24:
+			_plane_mesh.surface_add_vertex(points[k])
+			_plane_mesh.surface_add_vertex(points[(k + 1) % 24])
 	_plane_mesh.surface_end()
 
 

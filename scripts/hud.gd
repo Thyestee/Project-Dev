@@ -34,10 +34,6 @@ class ToolIcon:
 			"pickaxe":
 				draw_line(Vector2(3, 14) * s, Vector2(11, 6) * s, wood, 1.7 * s)
 				draw_polyline(PackedVector2Array([Vector2(4.5, 3.5) * s, Vector2(8.5, 3.2) * s, Vector2(11, 6) * s, Vector2(12.8, 8.5) * s, Vector2(13, 12.5) * s]), c, 2.0 * s)
-			"leveler":
-				draw_line(Vector2(2.5, 13.5) * s, Vector2(6.5, 9.5) * s, wood, 2.0 * s)
-				draw_line(Vector2(6.5, 9.5) * s, Vector2(8, 8) * s, Color(0.4, 0.4, 0.42, a), 1.2 * s)
-				draw_colored_polygon(PackedVector2Array([Vector2(7.5, 8.5) * s, Vector2(9, 3) * s, Vector2(14, 2) * s, Vector2(13, 7) * s]), Color(0.75, 0.77, 0.8, a))
 			"sword":
 				draw_line(Vector2(5.5, 10.5) * s, Vector2(13.5, 2.5) * s, c, 2.0 * s)
 				draw_line(Vector2(3.5, 8.5) * s, Vector2(7.5, 12.5) * s, Color(0.9, 0.75, 0.3, a), 1.6 * s)
@@ -48,13 +44,6 @@ class ToolIcon:
 					var d := Vector2.from_angle(k * TAU / 8.0)
 					draw_line(Vector2(10.5, 5.5) * s + d * 2.0 * s, Vector2(10.5, 5.5) * s + d * 3.6 * s, c, 1.0 * s)
 				draw_circle(Vector2(10.5, 5.5) * s, 2.6 * s, c)
-			"bow":
-				draw_arc(Vector2(4.0, 8.0) * s, 6.5 * s, -1.2, 1.2, 14, wood, 1.7 * s)
-				var top := Vector2(4.0, 8.0) * s + Vector2.from_angle(-1.2) * 6.5 * s
-				var bottom := Vector2(4.0, 8.0) * s + Vector2.from_angle(1.2) * 6.5 * s
-				draw_line(top, bottom, Color(0.9, 0.9, 0.85, a), 0.6 * s)
-				draw_line(Vector2(5.5, 8) * s, Vector2(14, 8) * s, Color(0.8, 0.7, 0.5, a), 1.0 * s)
-				draw_colored_polygon(PackedVector2Array([Vector2(14.5, 8) * s, Vector2(12.5, 6.8) * s, Vector2(12.5, 9.2) * s]), Color(0.7, 0.72, 0.76, a))
 			"bomb":
 				draw_rect(Rect2(Vector2(4.5, 6) * s, Vector2(6, 8.5) * s), Color(0.8, 0.2, 0.14, a))
 				draw_rect(Rect2(Vector2(4.5, 9) * s, Vector2(6, 1.2) * s), Color(0.9, 0.85, 0.6, a))
@@ -275,7 +264,7 @@ func _build_bottom(root: Control) -> void:
 	row.add_theme_constant_override("separation", 6)
 	row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	column.add_child(row)
-	for i in 6:
+	for i in PlayerScript.SLOTS.size():
 		var slot := Panel.new()
 		slot.custom_minimum_size = Vector2(62, 62)
 		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -353,10 +342,8 @@ func _build_messages(root: Control) -> void:
 # --- Updates --------------------------------------------------------------------------
 
 func refresh() -> void:
-	var buried: int = game.world.remaining_treasures()
-	var total: int = game.world.treasure_list.size()
 	_coins_label.text = "Coins: %s" % thousands(game.coins)
-	_found_label.text = "Treasures found here: %d / %d" % [total - buried, total]
+	_found_label.text = "Treasures found: %d  ·  deepest: %s m" % [game.found_count(), thousands(roundi(game.deepest))]
 	_refresh_pack()
 	var player = game.player
 	for i in _slots.size():
@@ -368,20 +355,15 @@ func refresh() -> void:
 		icon.dim = false
 		note.text = ""
 		match kind:
-			"pickaxe", "sword", "mace", "bow":
+			"pickaxe", "sword", "mace":
 				var item: Dictionary = game.equipped[kind]
 				icon.dim = item.is_empty()
 				icon.color = Items.TIER_COLORS[item["tier"]] if not item.is_empty() else Color(0.6, 0.6, 0.6)
-				if kind == "bow":
-					note.text = str(game.supplies["arrows"])
 				if not item.is_empty() and item["rarity"] > 0:
-					note.text = (note.text + " " if note.text != "" else "") + "●"
+					note.text = "●"
 					note.add_theme_color_override("font_color", Items.color(item))
 				else:
 					note.add_theme_color_override("font_color", TEXT)
-			"leveler":
-				icon.color = Color(0.75, 0.77, 0.8)
-				note.add_theme_color_override("font_color", TEXT)
 			"bomb":
 				var n: int = game.supplies[game.selected_explosive()]
 				icon.dim = n <= 0
@@ -400,6 +382,7 @@ func _refresh_pack() -> void:
 	var fill := 0.0
 	var totals := {}
 	var treasure := 0
+	var scrolls := 0
 	for item: Dictionary in bag:
 		if Goods.is_good(item):
 			fill += float(item["count"]) / Goods.STACK
@@ -408,6 +391,8 @@ func _refresh_pack() -> void:
 			fill += 1.0
 			if Goods.is_treasure(item):
 				treasure += 1
+			elif Goods.is_scroll(item):
+				scrolls += 1
 	var ratio := clampf(fill / slots, 0.0, 1.0)
 	var full := ratio >= 0.999
 	_pack_title.text = "Pack  %d / %d slots%s" % [bag.size(), slots, "  ·  full!" if full else ""]
@@ -420,6 +405,8 @@ func _refresh_pack() -> void:
 			parts.append("%s %d" % [Goods.LIST[id]["name"], totals[id]])
 	if treasure > 0:
 		parts.append("%d treasure%s" % [treasure, "" if treasure == 1 else "s"])
+	if scrolls > 0:
+		parts.append("%d scroll%s" % [scrolls, "" if scrolls == 1 else "s"])
 	if parts.is_empty():
 		_pack_text.text = "Empty. The ore you dig out goes in here."
 	else:
@@ -431,18 +418,12 @@ func _slot_info() -> String:
 	var kind: String = PlayerScript.SLOTS[player.slot]
 	match kind:
 		"pickaxe":
-			return "%s  ·  hold to dig  ·  E digs out treasure" % Items.title(game.equipped["pickaxe"])
-		"leveler":
-			return "Leveller: click a floor, wall or ceiling to make it flat"
-		"sword", "mace", "bow":
+			return "%s  ·  hold left to dig, right to flatten  ·  E digs out treasure" % Items.title(game.equipped["pickaxe"])
+		"sword", "mace":
 			var item: Dictionary = game.equipped[kind]
 			if item.is_empty():
-				return "No %s yet: %s" % [kind, "buy one at the workbench" if kind == "bow" else "make one at your forge"]
-			var extra := ""
-			if kind == "bow":
-				extra = "  ·  %d arrows  ·  hold to draw" % game.supplies["arrows"]
-			elif not game.equipped["shield"].is_empty():
-				extra = "  ·  right click to block"
+				return "No %s yet: they turn up in the chests of hidden rooms" % kind
+			var extra := "  ·  right click to block" if not game.equipped["shield"].is_empty() else ""
 			return Items.title(item) + extra
 		"bomb":
 			var id: String = game.selected_explosive()
@@ -484,8 +465,9 @@ func update_status(delta: float) -> void:
 		elif metres < 0.5:
 			_depth_label.text = "On the stairs"
 		else:
-			var v: int = game.world.vault_containing(player.position + Vector3(0.0, 0.2, 0.0))
-			_depth_label.text = ("In a hidden room  ·  " if v >= 0 else "") + "Depth: %.1f m" % metres
+			var id: String = game.world.room_containing(player.position + Vector3(0.0, 0.2, 0.0))
+			var where: String = ("In a %s  ·  " % String(game.world.rooms[id]["name"]).to_lower()) if id != "" else ""
+			_depth_label.text = where + ("Depth: %.1f m" % metres if metres < 1000.0 else "Depth: %s m" % thousands(roundi(metres)))
 	_buff_label.text = "Well rested: %d:%02d" % [int(game.rested) / 60, int(game.rested) % 60] if game.rested > 0.0 else ""
 	_buff_label.visible = game.rested > 0.0
 	var boss = game.enemies.active_boss()
@@ -497,19 +479,19 @@ func update_status(delta: float) -> void:
 
 
 func _compass_text() -> String:
-	var v: int = game.tracked
-	if v < 0 or v >= game.world.vaults.size() or game.vault_state[v]["opened"]:
+	var t: Dictionary = game.tracked
+	if t.is_empty():
 		return ""
 	var player = game.player
-	var center: Vector3 = game.world.vaults[v]["center"]
+	var center: Vector3 = t["center"]
 	var to: Vector3 = center - player.position
 	var flat := Vector2(to.x, to.z)
 	var ahead := Vector2(-sin(player.yaw), -cos(player.yaw))
 	var angle := wrapf(ahead.angle_to(flat), 0.0, TAU)
 	var dir: String = DIRECTIONS[int(round(angle / (TAU / 8.0))) % 8]
-	var down: float = player.position.y - (Vector3(game.world.vaults[v]["lo"]) * 0.125).y
+	var down: float = player.position.y - float(t["top"])
 	var vertical := "%d m below you" % roundi(down) if down > 1.0 else ("%d m above you" % roundi(-down) if down < -1.0 else "level with you")
-	return "Hidden room: %d m %s, %s" % [roundi(flat.length()), dir, vertical]
+	return "%s: %d m %s, %s" % [t["name"], roundi(flat.length()), dir, vertical]
 
 
 func set_target(text: String, color := Color(1, 1, 1, 0.85)) -> void:

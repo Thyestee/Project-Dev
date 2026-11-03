@@ -1,6 +1,6 @@
 extends Node3D
-# Things in flight: your arrows and the skeletons', ghostly blades, and thrown explosives that
-# bounce about until their fuse runs out.
+# Things in flight: the skeletons' arrows, darts from traps, ghostly blades, and thrown explosives
+# that bounce about until their fuse runs out.
 
 const Models := preload("res://scripts/models.gd")
 const Body := preload("res://scripts/body.gd")
@@ -29,6 +29,11 @@ func _ready() -> void:
 		[Vector3(0.0, 0.024, 0.25), Vector3(0.006, 0.045, 0.1), Color(0.6, 0.12, 0.1)],
 		[Vector3(0.024, 0.0, 0.25), Vector3(0.045, 0.006, 0.1), Color(0.6, 0.12, 0.1)],
 	])
+	_meshes["dart"] = Models.build([
+		[Vector3.ZERO, Vector3(0.018, 0.018, 0.3), Color(0.24, 0.22, 0.2)],
+		[Vector3(0.0, 0.0, -0.16), Vector3(0.03, 0.03, 0.05), Color(0.55, 0.57, 0.6)],
+		[Vector3(0.0, 0.0, 0.13), Vector3(0.045, 0.045, 0.04), Color(0.7, 0.2, 0.15)],
+	])
 	_meshes["blade"] = Models.build([
 		[Vector3.ZERO, Vector3(0.9, 0.035, 0.22), Color(0.55, 0.85, 1.0), 1.6],
 		[Vector3(0.0, 0.0, 0.08), Vector3(0.6, 0.03, 0.12), Color(0.8, 0.95, 1.0), 2.0],
@@ -51,11 +56,19 @@ func clear() -> void:
 	_list.clear()
 
 
-# An arrow. `info` carries what the hit does: {"item", "damage", "pierce", "blast", "shooter"}.
+# An arrow. `info` carries what the hit does: {"item", "damage", "shooter"}.
 func shoot(from: Vector3, vel: Vector3, friendly: bool, info: Dictionary) -> void:
 	var node := Models.instance(self, _meshes["arrow" if friendly else "bone_arrow"], game.world.material, from)
 	var p := {"kind": "arrow", "node": node, "pos": from, "vel": vel, "friendly": friendly, "life": 6.0, "stuck": false, "hits": []}
 	p.merge(info)
+	_list.append(p)
+	_orient(p)
+
+
+# A dart from a trap: it flies like a skeleton's arrow, only faster and flatter.
+func dart(from: Vector3, vel: Vector3, damage: float) -> void:
+	var node := Models.instance(self, _meshes["dart"], game.world.material, from)
+	var p := {"kind": "arrow", "node": node, "pos": from, "vel": vel, "friendly": false, "life": 3.0, "stuck": false, "hits": [], "damage": damage, "dart": true}
 	_list.append(p)
 	_orient(p)
 
@@ -120,13 +133,9 @@ func _orient(p: Dictionary) -> void:
 func _update_arrow(p: Dictionary, delta: float) -> bool:
 	if p["stuck"]:
 		p["life"] = float(p["life"]) - delta
-		# Your arrows can be picked up again from where they landed.
-		if p["friendly"] and game.player.body.position.distance_to(p["pos"]) < 1.3:
-			game.pick_up_arrow()
-			return true
 		return float(p["life"]) <= 0.0
 	var vel: Vector3 = p["vel"]
-	vel.y -= ARROW_GRAVITY * delta
+	vel.y -= ARROW_GRAVITY * delta * (0.3 if p.get("dart", false) else 1.0)
 	p["vel"] = vel
 	var a: Vector3 = p["pos"]
 	var b := a + vel * delta
@@ -135,26 +144,20 @@ func _update_arrow(p: Dictionary, delta: float) -> bool:
 	var wall_t: float = float(wall["dist"]) / length if not wall.is_empty() else 2.0
 	p["life"] = float(p["life"]) - delta
 	if p["friendly"]:
+		# Sent back by a Mirror Ward: now it's after them.
 		var hit: Dictionary = game.enemies.segment_hit(a, b, p["hits"])
 		if not hit.is_empty() and float(hit["t"]) < wall_t:
 			game.arrow_hit_enemy(p, hit["enemy"], a.lerp(b, hit["t"]))
-			if int(p.get("pierce", 0)) > 0:
-				p["pierce"] = int(p["pierce"]) - 1
-				p["hits"].append(hit["enemy"])
-			else:
-				return true
+			return true
 	else:
 		var t := Body.segment_box(a, b, game.player.body.lo(), game.player.body.hi())
 		if t >= 0.0 and t < wall_t:
 			return game.enemy_arrow_hits_player(p)
 	if not wall.is_empty():
 		var hit_pos := a.lerp(b, wall_t)
-		if p.get("blast", false):
-			game.arrow_blast(p, hit_pos)
-			return true
 		p["pos"] = hit_pos - vel.normalized() * 0.12
 		p["stuck"] = true
-		p["life"] = 20.0 if p["friendly"] else 3.0
+		p["life"] = 3.0
 		_orient(p)
 		game.sfx.play_at("thunk", hit_pos, randf_range(0.9, 1.1), -6.0)
 		return false

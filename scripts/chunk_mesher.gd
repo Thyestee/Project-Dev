@@ -114,14 +114,15 @@ static func _ao(blocks: PackedByteArray, i: int, k: int) -> int:
 # Builds the brick whose lowest corner is cell (x0, y0, z0). Cells are stored column by column:
 # index = (y + 1) + (x + 1) * stride_x + (z + 1) * stride_z. Returns [vertices, normals, colours,
 # uv2], or [] if there's nothing to draw. `has_built` says whether the brick may hold built
-# blocks at all.
-static func build(blocks: PackedByteArray, dens: PackedByteArray, stride_x: int, stride_z: int, x0: int, y0: int, z0: int, has_built: bool, voxel: float) -> Array:
+# blocks at all. `origin` is where cell (0, 0, 0) of the array sits in the world, so that the
+# flecks in ore don't repeat from chunk to chunk.
+static func build(blocks: PackedByteArray, dens: PackedByteArray, stride_x: int, stride_z: int, x0: int, y0: int, z0: int, has_built: bool, voxel: float, origin := Vector3i.ZERO) -> Array:
 	_prepare(stride_x, stride_z)
 	var verts := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var colors := PackedColorArray()
 	var infos := PackedVector2Array()
-	_ground(blocks, dens, x0, y0, z0, voxel, verts, normals, colors, infos)
+	_ground(blocks, dens, x0, y0, z0, voxel, verts, normals, colors, infos, origin)
 	if has_built:
 		_cubes(blocks, x0, y0, z0, voxel, verts, normals, colors, infos)
 	if verts.is_empty():
@@ -132,7 +133,7 @@ static func build(blocks: PackedByteArray, dens: PackedByteArray, stride_x: int,
 # --- The ground ------------------------------------------------------------------------------
 
 static func _ground(blocks: PackedByteArray, dens: PackedByteArray, x0: int, y0: int, z0: int, voxel: float,
-		verts: PackedVector3Array, normals: PackedVector3Array, colors: PackedColorArray, infos: PackedVector2Array) -> void:
+		verts: PackedVector3Array, normals: PackedVector3Array, colors: PackedColorArray, infos: PackedVector2Array, origin: Vector3i) -> void:
 	var sx := _stride_x
 	var sz := _stride_z
 	var n := BRICK + 1
@@ -334,7 +335,7 @@ static func _ground(blocks: PackedByteArray, dens: PackedByteArray, x0: int, y0:
 		var fleck := _flecks[mat]
 		var info := Vector2(0.0 if fleck.a > 0.0 else _info[mat].x, GROUND_KIND)
 		var fleck_info := Vector2(_info[mat].x, GROUND_KIND)
-		var h := ((x0 + lx) * 73856093) ^ ((y0 + ly) * 19349663) ^ ((z0 + lz) * 83492791) ^ (axis * 1640531527)
+		var h := ((origin.x + x0 + lx) * 73856093) ^ ((origin.y + y0 + ly) * 19349663) ^ ((origin.z + z0 + lz) * 83492791) ^ (axis * 1640531527)
 		for k in 4:
 			var pb := quad[k]
 			var pc := quad[(k + 1) & 3]

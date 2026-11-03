@@ -25,7 +25,7 @@ class Enemy:
 	extends RefCounted
 	var type := ""
 	var def: Dictionary
-	var vault := -1
+	var room := ""
 	var spawn := -1
 	var node: Node3D
 	var parts := {}
@@ -71,14 +71,14 @@ func clear() -> void:
 	list.clear()
 
 
-func spawn_vault(v: Dictionary, dead: Array, awake: bool) -> void:
-	var spawns: Array = v["spawns"]
+func spawn_room(room: Dictionary, dead: Array, awake: bool) -> void:
+	var spawns: Array = room.get("spawns", [])
 	for k in spawns.size():
 		if dead.has(k):
 			continue
 		var s: Dictionary = spawns[k]
-		var e := _make(s["type"], float(v["depth"]))
-		e.vault = v["index"]
+		var e := _make(s["type"], float(room["level"]))
+		e.room = room["id"]
 		e.spawn = k
 		e.home = s["pos"]
 		e.body.position = s["pos"]
@@ -90,10 +90,21 @@ func spawn_vault(v: Dictionary, dead: Array, awake: bool) -> void:
 		list.append(e)
 
 
+# A room far behind you: its guards go, and come back as they were when you return.
+func despawn_room(id: String) -> void:
+	var k := list.size() - 1
+	while k >= 0:
+		var e: Enemy = list[k]
+		if e.room == id:
+			e.node.queue_free()
+			list.remove_at(k)
+		k -= 1
+
+
 # Breaking a wall makes a racket: the guards come straight for you.
-func wake_vault(v: int) -> void:
+func wake_room(id: String) -> void:
 	for e: Enemy in list:
-		if e.vault == v and e.state == "sleep":
+		if e.room == id and e.state == "sleep":
 			e.state = "idle"
 			e.node.visible = true
 			_alert(e)
@@ -114,10 +125,10 @@ func reset() -> void:
 			e.state = "idle"
 
 
-func alive_in_vault(v: int) -> int:
+func alive_in_room(id: String) -> int:
 	var n := 0
 	for e: Enemy in list:
-		if e.vault == v and not e.dead:
+		if e.room == id and not e.dead:
 			n += 1
 	return n
 
@@ -172,7 +183,7 @@ func _think(e: Enemy, delta: float, player, eye: Vector3) -> void:
 			e.sees = dist < 24.0 and game.world.line_of_sight(me + Vector3(0.0, float(e.def["height"]) * 0.8, 0.0), eye)
 		match e.state:
 			"idle":
-				if playing and ((e.sees and dist < 14.0) or game.world.vault_containing(player.body.position) == e.vault):
+				if playing and ((e.sees and dist < 14.0) or game.world.room_containing(player.body.position) == e.room):
 					_alert(e)
 			"chase":
 				e.turn = _yaw_toward(dir)
@@ -526,15 +537,16 @@ func _animate(e: Enemy, delta: float, eye: Vector3) -> void:
 		e.bar.set_instance_shader_parameter("fill", clampf(e.health / e.max_health, 0.0, 1.0))
 
 
-func _make(type: String, depth: float) -> Enemy:
+# A guard as tough as its room is deep: `level` is how far down it is (see Blocks.level). Their
+# health keeps up with what your weapons hit for at that depth; their blows grow more slowly.
+func _make(type: String, level: float) -> Enemy:
 	var e := Enemy.new()
 	e.type = type
 	e.def = TYPES[type]
-	var mult := 1.0 + depth / 25.0
-	e.max_health = float(e.def["health"]) * mult
+	e.max_health = float(e.def["health"]) * pow(1.42, level)
 	e.health = e.max_health
-	e.damage = float(e.def["damage"]) * mult
-	e.coins = roundi(float(e.def["coins"]) * mult)
+	e.damage = float(e.def["damage"]) * pow(1.22, level)
+	e.coins = roundi(float(e.def["coins"]) * pow(1.5, level))
 	e.body = Body.new()
 	e.body.world = game.world
 	e.body.set_size(e.def["half"], e.def["height"])
