@@ -5,7 +5,8 @@ extends RefCounted
 # density crosses the middle (surface nets: one vertex per corner where the cells meet, placed
 # where the density says, and two triangles for every pair of neighbours with ground on one side
 # and air on the other). Built things, from the house to the hidden rooms and buried treasure,
-# stay crisp cubes. No vertex is shared, so every triangle keeps its own flat shade.
+# stay crisp cubes. No vertex is shared, so every triangle keeps its own flat shade, and in ore
+# and gems some triangles take the colour of the metal or crystal inside.
 #
 # Vertex colours have the shading baked in. UV marks the corners of each ground triangle so the
 # shader can line its edges. UV2 holds the glow, and either the cube's shade variation or -2 for
@@ -44,6 +45,7 @@ static var _ao_off := PackedInt32Array()      # per face corner: side, side, dia
 static var _corner_pos := PackedVector3Array()
 static var _normals := PackedVector3Array()
 static var _colors := PackedColorArray()      # block colours, linear
+static var _flecks := PackedColorArray()      # the colour of an ore's flecks, linear (alpha 0: none)
 static var _info := PackedVector2Array()      # block glow and shade variation
 # For each axis and each side the ground is on, the four vertices around an edge: offsets of
 # their dual cells from the edge's lower cell, in the brick's dual-cell numbering and in cells,
@@ -82,6 +84,8 @@ static func _prepare(stride_x: int, stride_z: int) -> void:
 		var c: Color = Blocks.COLORS[b]
 		_colors.append(c.srgb_to_linear())
 		_info.append(Vector2(Blocks.GLOW[b], Blocks.JITTER[b]))
+		var fleck: Color = Blocks.FLECKS.get(b, Color(0.0, 0.0, 0.0, 0.0))
+		_flecks.append(fleck.srgb_to_linear() if fleck.a > 0.0 else fleck)
 	# Around the edge along axis a, with u and v the next two axes, the dual cells sit at
 	# (du, dv) = (-1, -1), (0, -1), (0, 0), (-1, 0): counter-clockwise seen from +a.
 	var dual_stride := [1, BRICK + 1, (BRICK + 1) * (BRICK + 1)]
@@ -326,7 +330,10 @@ static func _ground(blocks: PackedByteArray, dens: PackedByteArray, x0: int, y0:
 		var mid_light := (light[0] + light[1] + light[2] + light[3]) * 0.25
 		var col: Color = _colors[mat]
 		var jitter: float = _info[mat].y
-		var info := Vector2(_info[mat].x, GROUND_KIND)
+		# Ore and gems: some of their triangles are flecks of what they hold, and only those glint.
+		var fleck := _flecks[mat]
+		var info := Vector2(0.0 if fleck.a > 0.0 else _info[mat].x, GROUND_KIND)
+		var fleck_info := Vector2(_info[mat].x, GROUND_KIND)
 		var h := ((x0 + lx) * 73856093) ^ ((y0 + ly) * 19349663) ^ ((z0 + lz) * 83492791) ^ (axis * 1640531527)
 		for k in 4:
 			var pb := quad[k]
@@ -344,12 +351,20 @@ static func _ground(blocks: PackedByteArray, dens: PackedByteArray, x0: int, y0:
 			normals.append(normal)
 			normals.append(normal)
 			normals.append(normal)
-			colors.append(col * (f * mid_light))
-			colors.append(tint[k] * (f * light[k]))
-			colors.append(tint[(k + 1) & 3] * (f * light[(k + 1) & 3]))
-			infos.append(info)
-			infos.append(info)
-			infos.append(info)
+			if fleck.a > 0.0 and r > 0.6:
+				colors.append(fleck * (f * mid_light))
+				colors.append(fleck * (f * light[k]))
+				colors.append(fleck * (f * light[(k + 1) & 3]))
+				infos.append(fleck_info)
+				infos.append(fleck_info)
+				infos.append(fleck_info)
+			else:
+				colors.append(col * (f * mid_light))
+				colors.append(tint[k] * (f * light[k]))
+				colors.append(tint[(k + 1) & 3] * (f * light[(k + 1) & 3]))
+				infos.append(info)
+				infos.append(info)
+				infos.append(info)
 
 
 # --- Built blocks ------------------------------------------------------------------------------

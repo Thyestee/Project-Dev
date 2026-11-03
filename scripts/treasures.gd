@@ -1,35 +1,36 @@
 extends RefCounted
-# The lost treasures buried at every dig site. Depths are in metres below the room floor.
+# The lost treasures buried at every dig site. They're rare, they only turn up deep down, and
+# they're worth a great deal once you carry them home. Depths are in metres below the room floor.
 
-const PER_WORLD := 45
+const PER_WORLD := 30
 const RARITY_NAMES := ["Common", "Uncommon", "Rare", "Epic", "Legendary"]
 const RARITY_COLORS := [Color(0.85, 0.85, 0.85), Color(0.5, 0.9, 0.45), Color(0.45, 0.7, 1.0), Color(0.8, 0.55, 1.0), Color(1.0, 0.8, 0.25)]
 
 # Rare and better treasures sit in buried chests; the rest glint in the soil.
 const LIST := [
-	{"name": "Old Copper Coin", "rarity": 0, "value": 10, "weight": 30.0, "depth": [1, 8], "chest": false,
+	{"name": "Old Copper Coin", "rarity": 0, "value": 90, "weight": 30.0, "depth": [18, 30], "chest": false,
 		"text": "Worn smooth by the soil. Someone lost it on a long walk."},
-	{"name": "Painted Pottery Shard", "rarity": 0, "value": 15, "weight": 26.0, "depth": [2, 10], "chest": false,
+	{"name": "Painted Pottery Shard", "rarity": 0, "value": 110, "weight": 26.0, "depth": [18, 32], "chest": false,
 		"text": "A curve of blue glaze from a much bigger jug."},
-	{"name": "Flint Arrowhead", "rarity": 0, "value": 20, "weight": 20.0, "depth": [2, 12], "chest": false,
+	{"name": "Flint Arrowhead", "rarity": 0, "value": 130, "weight": 20.0, "depth": [19, 33], "chest": false,
 		"text": "Chipped by hand and still sharp after all this time."},
-	{"name": "Bronze Belt Buckle", "rarity": 1, "value": 35, "weight": 16.0, "depth": [4, 14], "chest": false,
+	{"name": "Bronze Belt Buckle", "rarity": 1, "value": 220, "weight": 16.0, "depth": [20, 35], "chest": false,
 		"text": "Green with age, with a running horse on the front."},
-	{"name": "Silver Ring", "rarity": 1, "value": 60, "weight": 12.0, "depth": [6, 18], "chest": false,
+	{"name": "Silver Ring", "rarity": 1, "value": 320, "weight": 12.0, "depth": [22, 37], "chest": false,
 		"text": "There's an inscription inside, too worn to read."},
-	{"name": "Brass Pocket Watch", "rarity": 1, "value": 90, "weight": 9.0, "depth": [8, 22], "chest": false,
+	{"name": "Brass Pocket Watch", "rarity": 1, "value": 450, "weight": 9.0, "depth": [24, 38], "chest": false,
 		"text": "Stopped at a quarter past three, forever."},
-	{"name": "Jade Figurine", "rarity": 2, "value": 150, "weight": 7.0, "depth": [12, 26], "chest": true,
+	{"name": "Jade Figurine", "rarity": 2, "value": 700, "weight": 7.0, "depth": [26, 40], "chest": true,
 		"text": "A small carved fox, cool to the touch."},
-	{"name": "Ceremonial Dagger", "rarity": 2, "value": 220, "weight": 5.0, "depth": [14, 30], "chest": true,
+	{"name": "Ceremonial Dagger", "rarity": 2, "value": 900, "weight": 5.0, "depth": [27, 41], "chest": true,
 		"text": "Far too ornate to have ever seen a fight."},
-	{"name": "Pouch of Gold Coins", "rarity": 2, "value": 320, "weight": 4.0, "depth": [16, 32], "chest": true,
+	{"name": "Pouch of Gold Coins", "rarity": 2, "value": 1200, "weight": 4.0, "depth": [28, 42], "chest": true,
 		"text": "The leather crumbles away. The coins don't."},
-	{"name": "Jeweled Brooch", "rarity": 3, "value": 480, "weight": 3.0, "depth": [20, 36], "chest": true,
+	{"name": "Jeweled Brooch", "rarity": 3, "value": 1800, "weight": 3.0, "depth": [30, 42], "chest": true,
 		"text": "Three red stones set in a silver flower."},
-	{"name": "Golden Idol", "rarity": 3, "value": 800, "weight": 2.0, "depth": [24, 40], "chest": true,
+	{"name": "Golden Idol", "rarity": 3, "value": 2600, "weight": 2.0, "depth": [32, 42], "chest": true,
 		"text": "Heavy, grinning, and strangely warm."},
-	{"name": "Crown of the Sunken King", "rarity": 4, "value": 2000, "weight": 0.0, "depth": [28, 44], "chest": true,
+	{"name": "Crown of the Sunken King", "rarity": 4, "value": 6000, "weight": 0.0, "depth": [34, 42], "chest": true,
 		"text": "So the old story was true. There is only one."},
 ]
 # Every world hides exactly one crown.

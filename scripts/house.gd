@@ -1,7 +1,7 @@
 extends RefCounted
-# Your house at the top of the world, the brick staircase down to the dig site, the decorations
-# and the furniture you place yourself, all built out of blocks. Coordinates are cells; `w` is
-# the world.
+# Your house at the top of the world, the brick staircase down to the dig site, the workbench and
+# the forge, the decorations and the furniture you place yourself, all built out of blocks.
+# Coordinates are cells; `w` is the world.
 
 const Blocks := preload("res://scripts/blocks.gd")
 const Catalog := preload("res://scripts/catalog.gd")
@@ -21,6 +21,8 @@ const SITE_RADIUS := Vector2(25.0, 23.0)
 const TORCH_STEPS := [10, 26, 42]
 const BENCH_LO := Vector3i(DOOR_X - 27, FLOOR, Z0 - 1)
 const BENCH_HI := Vector3i(DOOR_X - 10, FLOOR + 16, Z0 + 5)
+const FORGE_LO := Vector3i(DOOR_X + 9, FLOOR, Z0)
+const FORGE_HI := Vector3i(DOOR_X + 24, CEIL - 1, Z0 + 6)
 const SPAWN := Vector3(192.0, 344.0, 262.0)
 const SHELF_SLOTS := 12        # one per kind of treasure
 
@@ -51,6 +53,10 @@ static func is_workbench(c: Vector3i) -> bool:
 	return c.x >= BENCH_LO.x and c.x <= BENCH_HI.x and c.y >= BENCH_LO.y and c.y <= BENCH_HI.y and c.z >= BENCH_LO.z and c.z <= BENCH_HI.z
 
 
+static func is_forge(c: Vector3i) -> bool:
+	return c.x >= FORGE_LO.x and c.x <= FORGE_HI.x and c.y >= FORGE_LO.y and c.y <= FORGE_HI.y and c.z >= FORGE_LO.z and c.z <= FORGE_HI.z
+
+
 static func spawn_point() -> Vector3:
 	return SPAWN * VOXEL
 
@@ -71,8 +77,8 @@ static func build_base(w, tier: int) -> void:
 	build_shell(w, tier)
 
 
-# Walls, floor and ceiling for the house's size, with the doorway, the stairs and the
-# workbench. Building it again wipes out the decorations and furniture, which go back after.
+# Walls, floor and ceiling for the house's size, with the doorway, the stairs, the workbench and
+# the forge. Building it again wipes out the decorations and furniture, which go back after.
 static func build_shell(w, tier: int) -> void:
 	var r := bounds(tier)
 	var x0 := r.position.x
@@ -109,6 +115,7 @@ static func build_shell(w, tier: int) -> void:
 	_stairs(w)
 	_doorframe(w)
 	_workbench(w)
+	_forge(w)
 	hanging_lantern(w, tier, Blocks.LANTERN)
 
 
@@ -186,6 +193,38 @@ static func _workbench(w) -> void:
 		w.fill(Vector3i(x - 1, FLOOR + 10, Z0 - 1), Vector3i(x + 1, FLOOR + 10, Z0 - 1), Blocks.IRON)
 
 
+# A stone hearth against the wall east of the door, with glowing coals, a bellows, a brick hood
+# and a chimney up through the ceiling.
+static func _forge(w) -> void:
+	var o := FORGE_LO
+	var top := CEIL - 1 - FLOOR
+	_box(w, o, Vector3i(0, 0, 0), Vector3i(15, 4, 6), Blocks.COBBLE)
+	_box(w, o, Vector3i(6, 1, 6), Vector3i(9, 2, 6), Blocks.EMBER)
+	_box(w, o, Vector3i(0, 5, 0), Vector3i(15, 11, 1), Blocks.BRICK)
+	_box(w, o, Vector3i(3, 5, 2), Vector3i(11, 5, 5), Blocks.EMBER)
+	_box(w, o, Vector3i(5, 6, 3), Vector3i(9, 6, 4), Blocks.FIRE)
+	_box(w, o, Vector3i(6, 7, 3), Vector3i(8, 7, 3), Blocks.FIRE)
+	# The bellows, and a few bars cooling at the other end.
+	_box(w, o, Vector3i(13, 5, 2), Vector3i(14, 6, 5), Blocks.SACK)
+	_box(w, o, Vector3i(12, 5, 3), Vector3i(12, 5, 4), Blocks.BEAM)
+	_box(w, o, Vector3i(13, 7, 5), Vector3i(14, 7, 6), Blocks.BEAM)
+	_box(w, o, Vector3i(0, 5, 4), Vector3i(1, 5, 5), Blocks.STEEL)
+	_box(w, o, Vector3i(0, 6, 4), Vector3i(1, 6, 4), Blocks.GOLD)
+	# Iron posts at the front corners hold up the hood; the chimney runs up from it.
+	for x: int in [0, 15]:
+		_box(w, o, Vector3i(x, 5, 6), Vector3i(x, 11, 6), Blocks.DARK_IRON)
+	_box(w, o, Vector3i(0, 12, 0), Vector3i(15, 14, 6), Blocks.BRICK)
+	_box(w, o, Vector3i(0, 12, 6), Vector3i(15, 12, 6), Blocks.DARK_IRON)
+	_box(w, o, Vector3i(4, 15, 0), Vector3i(11, top, 3), Blocks.BRICK)
+	# Tongs and a hammer hanging from the hood.
+	for x: int in [3, 5]:
+		_box(w, o, Vector3i(x, 9, 6), Vector3i(x, 11, 6), Blocks.IRON)
+
+
+static func _box(w, o: Vector3i, lo: Vector3i, hi: Vector3i, b: int) -> void:
+	w.fill(o + lo, o + hi, b)
+
+
 static func hanging_lantern(w, tier: int, b: int) -> void:
 	var c := center(tier)
 	var frame := Blocks.BEAM if b != Blocks.AIR else Blocks.AIR
@@ -211,6 +250,7 @@ static func lights(owned: Array, tier: int) -> Array:
 		list.append(_light(Vector3(c.x, CEIL - 6, c.y), WARM, 0.75, 9.0 + tier * 1.5))
 	for zc in windows(tier):
 		list.append(_light(Vector3(r.position.x + 1.5, FLOOR + 13, zc), Color(0.6, 0.72, 0.9), 0.4, 6.0))
+	list.append(_light(Vector3(FORGE_LO.x + 8.0, FLOOR + 8, FORGE_LO.z + 4.5), Color(1.0, 0.5, 0.2), 1.0, 6.0, true, true))
 	for k: int in TORCH_STEPS:
 		list.append(_light(Vector3(DOOR_X - 4.8, FLOOR - 1 - k + 13, Z0 - LANDING - 2 * k - 2), WARM, 0.7, 5.5, false))
 	for x: int in [int(SITE.x) - 19, int(SITE.x) + 17]:
@@ -347,7 +387,7 @@ static func _plant(w, x: int, z: int) -> void:
 
 
 # Wall lanterns as [x, z, way into the room]: between the windows, near the east corners,
-# beside the door and over the middle of the south wall.
+# beside the door (between it and the workbench) and over the middle of the south wall.
 static func _wall_lanterns(tier: int) -> Array:
 	var r := bounds(tier)
 	var list := []
@@ -356,7 +396,7 @@ static func _wall_lanterns(tier: int) -> Array:
 		list.append([r.position.x, (ws[k] + ws[k + 1]) / 2, Vector2i(1, 0)])
 	list.append([r.end.x - 1, Z0 + 6, Vector2i(-1, 0)])
 	list.append([r.end.x - 1, r.end.y - 7, Vector2i(-1, 0)])
-	list.append([DOOR_X + 16, Z0, Vector2i(0, 1)])
+	list.append([DOOR_X - 8, Z0, Vector2i(0, 1)])
 	list.append([DOOR_X, r.end.y - 1, Vector2i(0, -1)])
 	return list
 
@@ -427,6 +467,30 @@ static func can_place_furniture(w, type: String, x: int, z: int, rot: int, tier:
 				if w.block(xx, yy, zz) != Blocks.AIR:
 					return false
 	return true
+
+
+# Whether a piece of furniture stands where the workbench or the forge is. Only furniture placed
+# before the forge was built can.
+static func blocks_fixture(rec: Dictionary) -> bool:
+	var size := furniture_size(rec["type"], rec["rot"])
+	var x0: int = rec["x"]
+	var z0: int = rec["z"]
+	for box: Array in [[BENCH_LO, BENCH_HI], [FORGE_LO, FORGE_HI]]:
+		var lo: Vector3i = box[0]
+		var hi: Vector3i = box[1]
+		if x0 <= hi.x and x0 + size.x - 1 >= lo.x and z0 <= hi.z and z0 + size.z - 1 >= lo.z:
+			return true
+	return false
+
+
+# The first free place on the floor for a piece of furniture, or (-1, -1).
+static func free_spot(w, type: String, rot: int, tier: int) -> Vector2i:
+	var r := bounds(tier)
+	for z in range(r.position.y, r.end.y, 2):
+		for x in range(r.position.x, r.end.x, 2):
+			if can_place_furniture(w, type, x, z, rot, tier):
+				return Vector2i(x, z)
+	return Vector2i(-1, -1)
 
 
 # The middle of the footprint at floor height, in metres.

@@ -1,9 +1,10 @@
 extends CanvasLayer
-# Everything on screen while you play: stats, health and stamina, the detector readout, the tool
+# Everything on screen while you play: stats, health and stamina, what's in your pack, the tool
 # hotbar, messages, the boss's health and the compass to a hidden room you're tracking.
 
 const Treasures := preload("res://scripts/treasures.gd")
 const Items := preload("res://scripts/items.gd")
+const Goods := preload("res://scripts/goods.gd")
 const Catalog := preload("res://scripts/catalog.gd")
 const House := preload("res://scripts/house.gd")
 const PlayerScript := preload("res://scripts/player.gd")
@@ -11,7 +12,7 @@ const PlayerScript := preload("res://scripts/player.gd")
 const GOLD := Color(1.0, 0.84, 0.4)
 const TEXT := Color(0.93, 0.91, 0.86)
 const DIM := Color(0.75, 0.75, 0.75)
-const SIGNAL_WIDTH := 230.0
+const PACK_WIDTH := 250.0
 const BAR_WIDTH := 300.0
 const DIRECTIONS := ["ahead", "ahead and to the right", "to your right", "behind you, to the right", "behind you", "behind you, to the left", "to your left", "ahead and to the left"]
 
@@ -67,10 +68,9 @@ var _found_label: Label
 var _depth_label: Label
 var _buff_label: Label
 var _target_label: Label
-var _detector_title: Label
-var _signal_fill: ColorRect
-var _signal_text: Label
-var _signal_flash := 0.0
+var _pack_title: Label
+var _pack_fill: ColorRect
+var _pack_text: Label
 var _health_fill: ColorRect
 var _health_text: Label
 var _stamina_fill: ColorRect
@@ -106,7 +106,7 @@ func _ready() -> void:
 	root.add_child(_hurt)
 	_build_crosshair(root)
 	_build_stats(root)
-	_build_detector(root)
+	_build_pack(root)
 	_build_bottom(root)
 	_build_top(root)
 	_build_messages(root)
@@ -219,25 +219,28 @@ func _build_stats(root: Control) -> void:
 	box.add_child(_buff_label)
 
 
-func _build_detector(root: Control) -> void:
+# Bottom left: how full your pack is and what's in it.
+func _build_pack(root: Control) -> void:
 	var panel := _panel()
 	root.add_child(panel)
 	var box := VBoxContainer.new()
 	panel.add_child(box)
-	_detector_title = _label("", 15, GOLD)
-	box.add_child(_detector_title)
+	_pack_title = _label("", 15, GOLD)
+	box.add_child(_pack_title)
 	var bar := Control.new()
-	bar.custom_minimum_size = Vector2(SIGNAL_WIDTH, 12)
+	bar.custom_minimum_size = Vector2(PACK_WIDTH, 10)
 	box.add_child(bar)
 	var back := ColorRect.new()
 	back.color = Color(0, 0, 0, 0.5)
-	back.size = Vector2(SIGNAL_WIDTH, 12)
+	back.size = Vector2(PACK_WIDTH, 10)
 	bar.add_child(back)
-	_signal_fill = ColorRect.new()
-	_signal_fill.size = Vector2(0, 12)
-	bar.add_child(_signal_fill)
-	_signal_text = _label("", 14)
-	box.add_child(_signal_text)
+	_pack_fill = ColorRect.new()
+	_pack_fill.size = Vector2(0, 10)
+	bar.add_child(_pack_fill)
+	_pack_text = _label("", 13)
+	_pack_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_pack_text.custom_minimum_size = Vector2(PACK_WIDTH, 0)
+	box.add_child(_pack_text)
 	panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT, Control.PRESET_MODE_MINSIZE, 16)
 	panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 
@@ -351,8 +354,10 @@ func _build_messages(root: Control) -> void:
 
 func refresh() -> void:
 	var buried: int = game.world.remaining_treasures()
+	var total: int = game.world.treasure_list.size()
 	_coins_label.text = "Coins: %s" % thousands(game.coins)
-	_found_label.text = "Treasures found here: %d / %d" % [Treasures.PER_WORLD - buried, Treasures.PER_WORLD]
+	_found_label.text = "Treasures found here: %d / %d" % [total - buried, total]
+	_refresh_pack()
 	var player = game.player
 	for i in _slots.size():
 		var kind: String = PlayerScript.SLOTS[i]
@@ -388,18 +393,51 @@ func refresh() -> void:
 	_info_label.text = _slot_info()
 
 
+func _refresh_pack() -> void:
+	var bag: Array = game.bag
+	var slots: int = game.pack_slots()
+	# How full it is, counting a part-filled stack as part of a slot.
+	var fill := 0.0
+	var totals := {}
+	var treasure := 0
+	for item: Dictionary in bag:
+		if Goods.is_good(item):
+			fill += float(item["count"]) / Goods.STACK
+			totals[item["id"]] = int(totals.get(item["id"], 0)) + int(item["count"])
+		else:
+			fill += 1.0
+			if Goods.is_treasure(item):
+				treasure += 1
+	var ratio := clampf(fill / slots, 0.0, 1.0)
+	var full := ratio >= 0.999
+	_pack_title.text = "Pack  %d / %d slots%s" % [bag.size(), slots, "  ·  full!" if full else ""]
+	_pack_title.add_theme_color_override("font_color", Color(1.0, 0.5, 0.4) if full else (Color(1.0, 0.68, 0.35) if bag.size() >= slots else GOLD))
+	_pack_fill.size.x = PACK_WIDTH * ratio
+	_pack_fill.color = Color(0.45, 0.75, 0.4).lerp(Color(0.95, 0.75, 0.25), clampf(ratio * 2.0 - 0.6, 0.0, 1.0)).lerp(Color(0.95, 0.35, 0.25), clampf(ratio * 5.0 - 4.0, 0.0, 1.0))
+	var parts: Array[String] = []
+	for id: String in Goods.LIST:
+		if totals.has(id):
+			parts.append("%s %d" % [Goods.LIST[id]["name"], totals[id]])
+	if treasure > 0:
+		parts.append("%d treasure%s" % [treasure, "" if treasure == 1 else "s"])
+	if parts.is_empty():
+		_pack_text.text = "Empty. The ore you dig out goes in here."
+	else:
+		_pack_text.text = "  ·  ".join(parts) + ("\nHead home to sell, smelt or store it." if full else "")
+
+
 func _slot_info() -> String:
 	var player = game.player
 	var kind: String = PlayerScript.SLOTS[player.slot]
 	match kind:
 		"pickaxe":
-			return "%s  ·  hold to dig  ·  E picks up what you find" % Items.title(game.equipped["pickaxe"])
+			return "%s  ·  hold to dig  ·  E digs out treasure" % Items.title(game.equipped["pickaxe"])
 		"leveler":
 			return "Leveller: click a floor, wall or ceiling to make it flat"
 		"sword", "mace", "bow":
 			var item: Dictionary = game.equipped[kind]
 			if item.is_empty():
-				return "No %s yet: buy one at the workbench" % kind
+				return "No %s yet: %s" % [kind, "buy one at the workbench" if kind == "bow" else "make one at your forge"]
 			var extra := ""
 			if kind == "bow":
 				extra = "  ·  %d arrows  ·  hold to draw" % game.supplies["arrows"]
@@ -414,7 +452,6 @@ func _slot_info() -> String:
 
 func update_status(delta: float) -> void:
 	var player = game.player
-	_signal_flash = move_toward(_signal_flash, 0.0, delta * 6.0)
 	if _toast_time > 0.0:
 		_toast_time -= delta
 		_toast.modulate.a = clampf(_toast_time / 0.5, 0.0, 1.0)
@@ -480,31 +517,6 @@ func set_target(text: String, color := Color(1, 1, 1, 0.85)) -> void:
 	_target_label.add_theme_color_override("font_color", color)
 
 
-func set_detector(on: bool, strength: float, beeped: bool) -> void:
-	if beeped:
-		_signal_flash = 1.0
-	if not on:
-		_detector_title.text = "Metal detector: off  [F]"
-		_signal_fill.size.x = 0.0
-		_signal_text.text = "Press F to switch it on."
-		return
-	_detector_title.text = "Metal detector  [F]"
-	_signal_fill.size.x = SIGNAL_WIDTH * strength
-	var color := Color(0.35, 0.85, 0.4).lerp(Color(1.0, 0.8, 0.2), clampf(strength * 1.6, 0.0, 1.0))
-	color = color.lerp(Color(1.0, 0.35, 0.2), clampf(strength * 2.0 - 1.0, 0.0, 1.0))
-	_signal_fill.color = color.lightened(_signal_flash * 0.45)
-	if strength <= 0.0:
-		_signal_text.text = "No signal. Walk around and listen."
-	elif strength < 0.35:
-		_signal_text.text = "Faint signal"
-	elif strength < 0.65:
-		_signal_text.text = "Getting closer..."
-	elif strength < 0.85:
-		_signal_text.text = "Strong signal!"
-	else:
-		_signal_text.text = "It's right here!"
-
-
 func toast(text: String, color := TEXT) -> void:
 	_toast.text = text
 	_toast.add_theme_color_override("font_color", color)
@@ -519,11 +531,12 @@ func show_find(t: int, value: int) -> void:
 	_clear(_find_box)
 	_find_box.add_child(_centered(_label("You found", 18, TEXT)))
 	_find_box.add_child(_centered(_label(info["name"], 36, color)))
-	_find_box.add_child(_centered(_label("%s  ·  +%s coins" % [Treasures.RARITY_NAMES[rarity], thousands(value)], 17, color)))
+	_find_box.add_child(_centered(_label("%s  ·  worth %s coins" % [Treasures.RARITY_NAMES[rarity], thousands(value)], 17, color)))
 	var text := _centered(_label(info["text"], 15, Color(0.88, 0.86, 0.8)))
 	text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	text.custom_minimum_size = Vector2(700, 0)
 	_find_box.add_child(text)
+	_find_box.add_child(_centered(_label("It's in your pack. Sell it at your workbench.", 14, DIM)))
 	_find_time = 5.0
 	_find_box.modulate.a = 1.0
 

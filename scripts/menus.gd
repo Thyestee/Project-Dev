@@ -1,9 +1,10 @@
 extends CanvasLayer
-# The full-screen menus: loading, title, pause, the treasure journal, the workbench, your pack,
+# The full-screen menus: loading, title, pause, the journal, the workbench, the forge, your pack,
 # chests, the anvil, the map table, and coming round after a knockout.
 
 const Treasures := preload("res://scripts/treasures.gd")
 const Items := preload("res://scripts/items.gd")
+const Goods := preload("res://scripts/goods.gd")
 const Catalog := preload("res://scripts/catalog.gd")
 const House := preload("res://scripts/house.gd")
 
@@ -12,13 +13,13 @@ const TEXT := Color(0.93, 0.91, 0.86)
 const DIM := Color(0.75, 0.75, 0.75)
 const GOOD := Color(0.55, 0.85, 0.5)
 const BAD := Color(0.8, 0.5, 0.45)
-const SHOP_TABS := [["gear", "Gear"], ["supplies", "Supplies"], ["workshop", "Workshop"], ["house", "House"], ["furniture", "Furniture"]]
+const SHOP_TABS := [["sell", "Sell"], ["gear", "Gear"], ["supplies", "Supplies"], ["workshop", "Workshop"], ["house", "House"], ["furniture", "Furniture"]]
 const COMPASS := ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"]
 const CONTROLS := [
 	"WASD move  ·  Space jump  ·  Shift sprint  ·  Ctrl crouch  ·  Mouse look",
 	"1-6 or wheel: pickaxe, leveller, sword, mace, bow, explosives  ·  R changes the explosive",
 	"Left click use  ·  Right click raises your shield  ·  You duck and crawl through tight gaps on your own",
-	"E use or pick up  ·  G move furniture  ·  I pack  ·  Tab journal  ·  F detector  ·  Esc pause",
+	"E use or pick up  ·  G move furniture  ·  I pack  ·  Tab journal  ·  Esc pause",
 ]
 
 var game
@@ -30,7 +31,7 @@ var _box: VBoxContainer
 var _loading_label: Label
 var _selected := {}        # {"where": "bag" / "equipped" / "chest", "index": number or kind}
 var _details: VBoxContainer
-var _shop_tab := "gear"
+var _shop_tab := "sell"
 
 
 func _ready() -> void:
@@ -126,6 +127,19 @@ func _column(title: String, width := 0.0) -> VBoxContainer:
 	return column
 
 
+# A list that scrolls when it's taller than `height`.
+func _scroll_list(parent: Control, size: Vector2) -> VBoxContainer:
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = size
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	parent.add_child(scroll)
+	var list := VBoxContainer.new()
+	list.add_theme_constant_override("separation", 8)
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
+	return list
+
+
 static func thousands(n: int) -> String:
 	var s := str(n)
 	var out := ""
@@ -172,9 +186,9 @@ func show_loading(progress: float) -> void:
 
 
 func show_title(has_save: bool) -> void:
-	var lines: Array = ["Somewhere under your house, lost treasures and hidden rooms are waiting.",
-		"Take the stairs down and listen to your metal detector: the faster it beeps, the closer you are.",
-		"Hidden rooms hold old chests full of gear, and guards who don't like visitors.", ""]
+	var lines: Array = ["Under your house, the ground is full of ore and gems, and the deeper you dig, the better they get.",
+		"Carry them home to sell at the workbench, or smelt them at the forge into better tools.",
+		"Further down wait lost treasures, and hidden rooms with guards who don't like visitors.", ""]
 	lines.append_array(CONTROLS)
 	var buttons: Array = [["Continue digging" if has_save else "Start digging", Callable(game, "start_playing")]]
 	if has_save:
@@ -201,7 +215,7 @@ func _ask_new_world(from: String) -> void:
 
 
 func show_new_world_confirm() -> void:
-	_show_simple("New dig site?", ["The ground is filled back in, with new treasure and new hidden rooms.", "Your coins, gear, house and journal stay with you."], [
+	_show_simple("New dig site?", ["The ground is filled back in, with new ore, new treasure and new hidden rooms.", "Your coins, gear, pack, house and journal stay with you."], [
 		["Yes, new dig site", Callable(game, "new_world")],
 		["Cancel", Callable(game, "cancel_new_world")],
 	])
@@ -219,6 +233,8 @@ func open(menu: String, data = null) -> void:
 	current = menu
 	_data = data
 	_selected = {}
+	if menu == "shop" and _has_sellables():
+		_shop_tab = "sell"
 	refresh()
 
 
@@ -226,6 +242,8 @@ func refresh() -> void:
 	match current:
 		"shop":
 			_shop()
+		"forge":
+			_forge()
 		"inventory":
 			_inventory()
 		"chest":
@@ -243,9 +261,15 @@ func _close_hint(text: String) -> void:
 	_box.add_child(_centered(_label(text, 13, DIM)))
 
 
-# --- Gear widgets ---------------------------------------------------------------------------
+# --- Item widgets ---------------------------------------------------------------------------
 
+# Two short lines for a slot: what it is, and how many or what kind.
 func _short(item: Dictionary) -> String:
+	if Goods.is_good(item):
+		return "%s\n×%d" % [Goods.LIST[item["id"]]["name"], item["count"]]
+	if Goods.is_treasure(item):
+		var words: PackedStringArray = String(Treasures.LIST[item["id"]]["name"]).split(" ")
+		return "%s\ntreasure" % words[words.size() - 1]
 	var top: String = Items.LEGENDS[item["legend"]]["name"] if item["legend"] != "" else Items.TIER_NAMES[item["kind"]][item["tier"]]
 	return "%s\n%s" % [top, Items.KIND_NAMES[item["kind"]]]
 
@@ -255,14 +279,16 @@ func _item_button(item: Dictionary, selected: bool, on_press: Callable) -> Butto
 	b.custom_minimum_size = Vector2(96, 56)
 	b.text = _short(item)
 	b.add_theme_font_size_override("font_size", 13)
-	var c := Items.color(item)
+	var c := Goods.color(item)
 	b.add_theme_stylebox_override("normal", _style(Color(0.09, 0.075, 0.06, 0.95), c if selected else c.darkened(0.35), 3 if selected else 2))
 	b.add_theme_stylebox_override("hover", _style(Color(0.18, 0.14, 0.1, 0.95), c, 3))
 	b.add_theme_stylebox_override("pressed", _style(Color(0.18, 0.14, 0.1, 0.95), c, 3))
+	b.add_theme_stylebox_override("disabled", _style(Color(0.07, 0.06, 0.05, 0.8), Color(0.22, 0.2, 0.18)))
 	b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	b.add_theme_color_override("font_color", c)
 	b.add_theme_color_override("font_hover_color", c.lightened(0.2))
 	b.add_theme_color_override("font_pressed_color", c)
+	b.add_theme_color_override("font_disabled_color", c.darkened(0.55))
 	b.pressed.connect(on_press)
 	b.mouse_entered.connect(_show_details.bind(item))
 	b.mouse_exited.connect(_show_selected_details)
@@ -281,7 +307,8 @@ func _empty_slot(text := "") -> Panel:
 	return p
 
 
-func _grid(items: Array, slots: int, where: String) -> GridContainer:
+# A grid of slots. With `gear_only`, anything that isn't gear is shown but can't be picked.
+func _grid(items: Array, slots: int, where: String, gear_only := false) -> GridContainer:
 	var grid := GridContainer.new()
 	grid.columns = 4
 	grid.add_theme_constant_override("h_separation", 6)
@@ -289,7 +316,9 @@ func _grid(items: Array, slots: int, where: String) -> GridContainer:
 	for i in maxi(slots, items.size()):
 		if i < items.size():
 			var sel: bool = _selected.get("where", "") == where and _selected.get("index", -1) == i
-			grid.add_child(_item_button(items[i], sel, _select.bind(where, i)))
+			var b := _item_button(items[i], sel, _select.bind(where, i))
+			b.disabled = gear_only and not Goods.is_gear(items[i])
+			grid.add_child(b)
 		else:
 			grid.add_child(_empty_slot())
 	return grid
@@ -319,10 +348,22 @@ func _show_details(item: Dictionary) -> void:
 		return
 	_clear(_details)
 	if item.is_empty():
-		_details.add_child(_wrapped(_label("Point at a piece of gear to see what it does. Click it to pick it.", 14, DIM), 300))
+		_details.add_child(_wrapped(_label("Point at something to see what it is. Click it to pick it.", 14, DIM), 300))
 		return
-	var c := Items.color(item)
-	_details.add_child(_wrapped(_label(Items.title(item), 24, c), 300))
+	var c := Goods.color(item)
+	_details.add_child(_wrapped(_label(Goods.title(item), 24, c), 300))
+	if Goods.is_good(item):
+		var def: Dictionary = Goods.LIST[item["id"]]
+		_details.add_child(_label("×%d  ·  %d coins each" % [item["count"], def["value"]], 14, c.darkened(0.1)))
+		_details.add_child(_wrapped(_label(def["text"], 14), 300))
+		_details.add_child(_label("Sells for %s coins at the workbench" % thousands(Goods.worth(item)), 12, DIM))
+		return
+	if Goods.is_treasure(item):
+		var info: Dictionary = Treasures.LIST[item["id"]]
+		_details.add_child(_label("%s treasure" % Treasures.RARITY_NAMES[info["rarity"]], 14, c.darkened(0.1)))
+		_details.add_child(_wrapped(_label(info["text"], 14), 300))
+		_details.add_child(_label("Sells for %s coins at the workbench" % thousands(Goods.worth(item)), 12, DIM))
+		return
 	_details.add_child(_label(Items.subtitle(item), 14, c.darkened(0.1)))
 	for line in Items.stat_lines(item):
 		_details.add_child(_wrapped(_label(line, 14), 300))
@@ -349,6 +390,10 @@ func _details_column() -> VBoxContainer:
 	return column
 
 
+func _pack_title() -> String:
+	return "Your pack  (%d / %d)" % [game.bag.size(), game.pack_slots()]
+
+
 # --- Your pack -----------------------------------------------------------------------------
 
 func _inventory() -> void:
@@ -373,15 +418,17 @@ func _inventory() -> void:
 			line.add_child(_item_button(item, sel, _select.bind("equipped", kind)))
 		worn.add_child(line)
 	row.add_child(worn)
-	var pack := _column("Pack  (%d / %d)" % [game.bag.size(), game.BAG_SIZE])
-	pack.add_child(_grid(game.bag, game.BAG_SIZE, "bag"))
+	var pack := _column("Carrying  (%d / %d slots)" % [game.bag.size(), game.pack_slots()])
+	pack.add_child(_grid(game.bag, game.pack_slots(), "bag"))
+	pack.add_child(_wrapped(_label("Ore, gems and bars stack up to %d in a slot. Sell what you find at the workbench, or smelt it at the forge." % Goods.STACK, 12, DIM), 400))
 	row.add_child(pack)
 	var details := _details_column()
 	row.add_child(details)
 	var where: String = _selected.get("where", "")
-	if where == "bag" and not _selected_item().is_empty():
+	var selected := _selected_item()
+	if where == "bag" and not selected.is_empty() and Goods.is_gear(selected):
 		details.add_child(_button("Equip", Callable(self, "_equip_selected"), Vector2(160, 36), 16))
-	elif where == "equipped" and _selected["index"] != "pickaxe" and not _selected_item().is_empty():
+	elif where == "equipped" and _selected["index"] != "pickaxe" and not selected.is_empty():
 		details.add_child(_button("Put in pack", Callable(self, "_unequip_selected"), Vector2(160, 36), 16))
 	# Supplies and furniture waiting to be placed.
 	var supplies := "Arrows: %d   ·   Dynamite: %d   ·   Blasting charges: %d" % [game.supplies["arrows"], game.supplies["dynamite"], game.supplies["charge"]]
@@ -429,8 +476,8 @@ func _chest() -> void:
 	else:
 		inside.add_child(_grid(items, 0 if loot else int(data["slots"]), "chest"))
 	row.add_child(inside)
-	var pack := _column("Your pack  (%d / %d)" % [game.bag.size(), game.BAG_SIZE])
-	pack.add_child(_grid(game.bag, game.BAG_SIZE, "bag"))
+	var pack := _column(_pack_title())
+	pack.add_child(_grid(game.bag, game.pack_slots(), "bag"))
 	row.add_child(pack)
 	var details := _details_column()
 	row.add_child(details)
@@ -441,6 +488,13 @@ func _chest() -> void:
 		details.add_child(_button("Store", Callable(self, "_store_selected"), Vector2(160, 36), 16))
 	if not items.is_empty():
 		details.add_child(_button("Take everything", Callable(game, "take_all").bind(items), Vector2(200, 36), 16))
+	if not loot:
+		var finds := 0
+		for item: Dictionary in game.bag:
+			if not Goods.is_gear(item):
+				finds += 1
+		if finds > 0:
+			details.add_child(_button("Store all your finds", Callable(game, "store_finds").bind(items, int(data["slots"])), Vector2(200, 36), 16))
 	_close_hint("E or Esc to close")
 
 
@@ -478,7 +532,7 @@ func _anvil() -> void:
 	worn.add_child(worn_grid)
 	row.add_child(worn)
 	var pack := _column("Pack")
-	pack.add_child(_grid(game.bag, game.BAG_SIZE, "bag"))
+	pack.add_child(_grid(game.bag, game.pack_slots(), "bag", true))
 	row.add_child(pack)
 	var column := VBoxContainer.new()
 	column.custom_minimum_size = Vector2(330, 300)
@@ -486,7 +540,7 @@ func _anvil() -> void:
 	row.add_child(column)
 	_details = null
 	var item := _selected_item()
-	if item.is_empty():
+	if item.is_empty() or not Goods.is_gear(item):
 		column.add_child(_wrapped(_label("Pick a piece of gear to work on.", 15, DIM), 320))
 	else:
 		var c := Items.color(item)
@@ -521,6 +575,79 @@ func _salvage_selected() -> void:
 	var i: int = _selected["index"]
 	_selected = {}
 	game.salvage(i)
+
+
+# --- The forge -----------------------------------------------------------------------------------
+
+func _forge() -> void:
+	_open("Forge")
+	_box.add_child(_centered(_wrapped(_label("Smelting burns coal to turn ore into bars. Forging turns bars into plain metal gear, which you put on straight away if it beats plain gear you have on. Everything comes out of your pack.", 14, DIM), 900)))
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 30)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	_box.add_child(row)
+	var left := _column("Smelt")
+	row.add_child(left)
+	var smelt := _scroll_list(left, Vector2(470, 380))
+	for k in Goods.SMELT.size():
+		var recipe: Dictionary = Goods.SMELT[k]
+		var out: String = recipe["out"]
+		var can: int = Goods.times(game.bag, recipe["in"])
+		var line := HBoxContainer.new()
+		line.add_theme_constant_override("separation", 8)
+		var info := VBoxContainer.new()
+		info.add_theme_constant_override("separation", 0)
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.add_child(_label(Goods.LIST[out]["name"], 16, Goods.LIST[out]["color"]))
+		info.add_child(_label("%s  ·  enough for %d" % [Goods.needs_text(recipe["in"]), can], 12, DIM if can > 0 else BAD))
+		line.add_child(info)
+		var one := _button("Smelt", Callable(game, "smelt").bind(k, 1), Vector2(70, 32), 14)
+		one.disabled = can <= 0
+		one.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		line.add_child(one)
+		var all := _button("All", Callable(game, "smelt").bind(k, can), Vector2(54, 32), 14)
+		all.disabled = can <= 1
+		all.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		line.add_child(all)
+		smelt.add_child(line)
+	var right := _column("Forge gear")
+	row.add_child(right)
+	var forge := _scroll_list(right, Vector2(470, 380))
+	var kind := ""
+	for k in Goods.FORGE.size():
+		var recipe: Dictionary = Goods.FORGE[k]
+		if recipe["kind"] != kind:
+			kind = recipe["kind"]
+			var have: Dictionary = game.equipped[kind]
+			forge.add_child(_label("%ss  ·  you have %s" % [Items.KIND_NAMES[kind], Items.title(have) + " (" + Items.RARITY_NAMES[have["rarity"]].to_lower() + ")" if not have.is_empty() else "none"], 13, GOLD))
+		var sample := Items.make(kind, int(recipe["tier"]), 0, RandomNumberGenerator.new())
+		var ok: bool = Goods.times(game.bag, recipe["in"]) > 0
+		var line := HBoxContainer.new()
+		line.add_theme_constant_override("separation", 8)
+		var info := VBoxContainer.new()
+		info.add_theme_constant_override("separation", 0)
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.add_child(_label(Items.base_name(sample), 15, Items.TIER_COLORS[sample["tier"]].lightened(0.2)))
+		info.add_child(_wrapped(_label("  ·  ".join(Items.stat_lines(sample)), 11, DIM), 360))
+		info.add_child(_label(Goods.needs_text(recipe["in"]), 12, TEXT if ok else BAD))
+		line.add_child(info)
+		var b := _button("Forge", Callable(game, "forge_gear").bind(k), Vector2(76, 32), 14)
+		b.disabled = not ok
+		b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		line.add_child(b)
+		forge.add_child(line)
+	_box.add_child(_centered(_wrapped(_label(_carrying_text(), 13, TEXT), 900)))
+	_close_hint("E or Esc to close")
+
+
+# "In your pack: Coal 12  ·  Iron ore 30  ·  ..."
+func _carrying_text() -> String:
+	var parts: Array[String] = []
+	for id: String in Goods.LIST:
+		var n := Goods.count(game.bag, id)
+		if n > 0:
+			parts.append("%s %d" % [Goods.LIST[id]["name"], n])
+	return "In your pack: " + ("  ·  ".join(parts) if not parts.is_empty() else "no ore or bars")
 
 
 # --- The map table -------------------------------------------------------------------------------
@@ -572,15 +699,16 @@ func _track(v: int) -> void:
 # --- The journal ---------------------------------------------------------------------------------
 
 func _journal() -> void:
-	_open("Treasure Journal", 30)
+	_open("Journal", 30)
+	var list := _scroll_list(_box, Vector2(900, 540))
 	var found_n: int = game.found_count()
 	var buried: int = game.world.remaining_treasures()
-	_box.add_child(_centered(_label("%d found in all  ·  %d still buried at this dig site" % [found_n, buried], 15)))
+	list.add_child(_centered(_label("Treasures  ·  %d found in all  ·  %d still buried at this dig site" % [found_n, buried], 17, GOLD)))
 	var grid := GridContainer.new()
 	grid.columns = 3
 	grid.add_theme_constant_override("h_separation", 22)
-	grid.add_theme_constant_override("v_separation", 12)
-	_box.add_child(grid)
+	grid.add_theme_constant_override("v_separation", 10)
+	list.add_child(grid)
 	for t in Treasures.LIST.size():
 		var info: Dictionary = Treasures.LIST[t]
 		var n: int = game.found.get(t, 0)
@@ -589,11 +717,31 @@ func _journal() -> void:
 		var depth: Array = info["depth"]
 		var entry := VBoxContainer.new()
 		entry.add_theme_constant_override("separation", 2)
-		entry.add_child(_label("%s  ×%d" % [info["name"], n] if n > 0 else "? ? ?", 17, color if n > 0 else DIM))
+		entry.add_child(_label("%s  ×%d" % [info["name"], n] if n > 0 else "? ? ?", 16, color if n > 0 else DIM))
 		entry.add_child(_label("%s  ·  %s coins" % [Treasures.RARITY_NAMES[rarity], thousands(info["value"])], 13, color.darkened(0.15)))
-		var text: String = info["text"] if n > 0 else "Usually %d to %d m down." % [depth[0], depth[1]]
-		entry.add_child(_wrapped(_label(text, 13, Color(0.82, 0.8, 0.75)), 260))
+		var text: String = info["text"] if n > 0 else "Only deep down: usually %d to %d m." % [depth[0], depth[1]]
+		entry.add_child(_wrapped(_label(text, 13, Color(0.82, 0.8, 0.75)), 280))
 		grid.add_child(entry)
+	list.add_child(_gap(6))
+	list.add_child(_centered(_label("Ores and gems  ·  the deeper, the better", 17, GOLD)))
+	var ores := GridContainer.new()
+	ores.columns = 4
+	ores.add_theme_constant_override("h_separation", 22)
+	ores.add_theme_constant_override("v_separation", 10)
+	list.add_child(ores)
+	for v: Dictionary in Goods.VEINS:
+		var id: String = v["good"]
+		var def: Dictionary = Goods.LIST[id]
+		var n: int = game.mined.get(id, 0)
+		var depth: Array = v["depth"]
+		var entry := VBoxContainer.new()
+		entry.add_theme_constant_override("separation", 2)
+		entry.add_child(_label(def["name"], 16, def["color"] if n > 0 else DIM))
+		entry.add_child(_label("%d coins each  ·  %d to %d m down" % [def["value"], depth[0], depth[1]], 12, Color(0.82, 0.8, 0.75)))
+		var tier := Goods.tier_needed(id)
+		var dug := "Dug out: %s" % thousands(n) if n > 0 else "Not found yet"
+		entry.add_child(_label("%s  ·  %s pickaxe" % [dug, Items.TIER_NAMES["pickaxe"][tier]], 12, DIM))
+		ores.add_child(entry)
 	_close_hint("Tab or Esc to close")
 
 
@@ -606,21 +754,16 @@ func _shop() -> void:
 	tabs.add_theme_constant_override("separation", 8)
 	tabs.alignment = BoxContainer.ALIGNMENT_CENTER
 	for tab: Array in SHOP_TABS:
-		var b := _button(tab[1], Callable(self, "_shop_switch").bind(tab[0]), Vector2(130, 36), 16)
+		var b := _button(tab[1], Callable(self, "_shop_switch").bind(tab[0]), Vector2(122, 36), 16)
 		if tab[0] == _shop_tab:
 			b.add_theme_stylebox_override("normal", _style(Color(0.34, 0.25, 0.12, 0.95), GOLD, 3))
 			b.add_theme_color_override("font_color", GOLD)
 		tabs.add_child(b)
 	_box.add_child(tabs)
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(820, 430)
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	_box.add_child(scroll)
-	var list := VBoxContainer.new()
-	list.add_theme_constant_override("separation", 8)
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(list)
+	var list := _scroll_list(_box, Vector2(820, 430))
 	match _shop_tab:
+		"sell":
+			_shop_sell(list)
 		"gear":
 			_shop_gear(list)
 		"supplies":
@@ -637,6 +780,13 @@ func _shop() -> void:
 func _shop_switch(tab: String) -> void:
 	_shop_tab = tab
 	refresh()
+
+
+func _has_sellables() -> bool:
+	for item: Dictionary in game.bag:
+		if Goods.worth(item) > 0:
+			return true
+	return false
 
 
 func _row(title: String, text: String, cost: int, action: Callable, verb: String, title_color := TEXT) -> HBoxContainer:
@@ -675,9 +825,56 @@ func _heading(list: VBoxContainer, text: String, note := "") -> void:
 		list.add_child(_wrapped(_label(note, 13, DIM), 780))
 
 
+# Everything in your pack the workbench will buy, a stack at a time or all of a sort at once.
+func _shop_sell(list: VBoxContainer) -> void:
+	list.add_child(_wrapped(_label("The workbench buys everything you dig up or smelt, and treasure. Bars are worth more than the ore they're made from, and they make gear at the forge.", 14, DIM), 780))
+	var totals := {"ore": 0, "bar": 0, "treasure": 0}
+	for item: Dictionary in game.bag:
+		var sort := Goods.sort_of(item)
+		if totals.has(sort):
+			totals[sort] = int(totals[sort]) + Goods.worth(item)
+	if int(totals["ore"]) + int(totals["bar"]) + int(totals["treasure"]) <= 0:
+		list.add_child(_gap(8))
+		list.add_child(_label("Nothing to sell. Bring home ore, gems, bars or treasure in your pack.", 15, TEXT))
+		return
+	var all := HBoxContainer.new()
+	all.add_theme_constant_override("separation", 8)
+	for pair: Array in [["ore", "Sell all ore and gems"], ["bar", "Sell all bars"], ["treasure", "Sell all treasure"]]:
+		if int(totals[pair[0]]) > 0:
+			all.add_child(_button("%s: %s" % [pair[1], thousands(totals[pair[0]])], Callable(game, "sell_all").bind(pair[0]), Vector2(0, 34), 14))
+	list.add_child(all)
+	for i in game.bag.size():
+		var item: Dictionary = game.bag[i]
+		var value := Goods.worth(item)
+		if value <= 0:
+			continue
+		var each := ""
+		if Goods.is_good(item):
+			each = "×%d  ·  %d coins each" % [item["count"], Goods.LIST[item["id"]]["value"]]
+		else:
+			each = "%s treasure" % Treasures.RARITY_NAMES[Treasures.LIST[item["id"]]["rarity"]]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		var info := VBoxContainer.new()
+		info.add_theme_constant_override("separation", 0)
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.add_child(_label(Goods.title(item), 16, Goods.color(item)))
+		info.add_child(_label(each, 12, DIM))
+		row.add_child(info)
+		var price := _label("%s coins" % thousands(value), 14, GOLD)
+		price.custom_minimum_size = Vector2(100, 0)
+		price.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		price.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(price)
+		var button := _button("Sell", Callable(game, "sell").bind(i), Vector2(100, 34), 15)
+		button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(button)
+		list.add_child(row)
+
+
 func _shop_gear(list: VBoxContainer) -> void:
-	list.add_child(_wrapped(_label("Plain, common gear. Gear with better rarities and affixes only turns up in the chests of hidden rooms.", 14, DIM), 780))
-	for kind: String in Items.KINDS:
+	list.add_child(_wrapped(_label("Bows and wooden shields. Metal tools and weapons are made at the forge, and gear with better rarities and affixes only turns up in the chests of hidden rooms.", 14, DIM), 780))
+	for kind: String in Catalog.GEAR_PRICES:
 		var have: Dictionary = game.equipped[kind]
 		_heading(list, Items.KIND_NAMES[kind] + "s", "Equipped: %s" % (Items.title(have) + " (" + Items.RARITY_NAMES[have["rarity"]].to_lower() + ")" if not have.is_empty() else "nothing"))
 		var prices: Array = Catalog.GEAR_PRICES[kind]
@@ -693,11 +890,11 @@ func _shop_supplies(list: VBoxContainer) -> void:
 		var have: int = game.supplies[s["id"]]
 		var title: String = "%s ×%d" % [s["name"], s["amount"]] if int(s["amount"]) > 1 else String(s["name"])
 		list.add_child(_row(title, "%s You have %d." % [s["text"], have], s["cost"], Callable(game, "buy_supply").bind(s["id"]), "Buy"))
-	list.add_child(_wrapped(_label("Throw explosives with the explosives slot (6). Get clear: the blast hurts you too.", 13, DIM), 780))
+	list.add_child(_wrapped(_label("Throw explosives with the explosives slot (6). Get clear: the blast hurts you too, and it shatters half the ore it breaks.", 13, DIM), 780))
 
 
 func _shop_workshop(list: VBoxContainer) -> void:
-	list.add_child(_wrapped(_label("Workshop upgrades work on every pickaxe you own, now and later.", 14, DIM), 780))
+	_heading(list, "Pickaxe", "These work on every pickaxe you own, now and later.")
 	var grips: Array = Catalog.GRIPS
 	var grip: int = game.workshop["grip"]
 	if grip + 1 < grips.size():
@@ -710,6 +907,13 @@ func _shop_workshop(list: VBoxContainer) -> void:
 		list.add_child(_row(sizes[size + 1]["name"], "Now: %s, every blow dents the ground %.1f m across, and the leveller flattens %.1f m squares. Next: %.1f m." % [sizes[size]["name"], sizes[size]["radius"] * 0.25, (6 + 2 * size) * 0.25, sizes[size + 1]["radius"] * 0.25], sizes[size + 1]["cost"], Callable(game, "buy_workshop").bind("size"), "Upgrade"))
 	else:
 		list.add_child(_row(sizes[size]["name"], "Every blow dents the ground %.1f m across." % (sizes[size]["radius"] * 0.25), -1, Callable(), "Maxed"))
+	_heading(list, "Pack", "Ore, gems and bars stack up to %d in a slot; gear and treasure take a slot each. A bigger pack means fewer trips home." % Goods.STACK)
+	var packs: Array = Catalog.PACKS
+	var pack: int = game.workshop["pack"]
+	if pack + 1 < packs.size():
+		list.add_child(_row(packs[pack + 1]["name"], "Now: %s, %d slots. Next: %d slots." % [packs[pack]["name"], packs[pack]["slots"], packs[pack + 1]["slots"]], packs[pack + 1]["cost"], Callable(game, "buy_workshop").bind("pack"), "Upgrade"))
+	else:
+		list.add_child(_row(packs[pack]["name"], "%d slots." % packs[pack]["slots"], -1, Callable(), "Maxed"))
 
 
 func _shop_house(list: VBoxContainer) -> void:

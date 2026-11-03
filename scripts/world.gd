@@ -14,6 +14,7 @@ extends Node3D
 
 const Blocks := preload("res://scripts/blocks.gd")
 const Treasures := preload("res://scripts/treasures.gd")
+const Goods := preload("res://scripts/goods.gd")
 const Mesher := preload("res://scripts/chunk_mesher.gd")
 const House := preload("res://scripts/house.gd")
 const Vaults := preload("res://scripts/vaults.gd")
@@ -41,6 +42,7 @@ const MAX_LIGHTS := 16
 const SOLID := 128         # densities from here up are solid
 const GROUND := 254        # untouched ground
 const BUILT := 255         # every built block
+const ORE_VEINS := 12000
 
 const SHADER := """
 shader_type spatial;
@@ -272,6 +274,18 @@ func can_fill(c: Vector3i) -> bool:
 	return c.x > 0 and c.y > 0 and c.z > 0 and c.x < SX - 1 and c.y < FLOOR_Y and c.z < SZ - 1 and not House.in_stairs(c)
 
 
+# The plain rock that's usually found at cell height y.
+static func rock_at(y: int) -> int:
+	var depth := (FLOOR_Y - y) * VOXEL
+	if depth < 13.0:
+		return Blocks.DIRT
+	if depth < 22.0:
+		return Blocks.STONE
+	if depth < 32.0:
+		return Blocks.SLATE
+	return Blocks.DEEPROCK
+
+
 # The hidden room whose inside holds point p (metres), or -1.
 func vault_containing(p: Vector3) -> int:
 	var c := p / VOXEL
@@ -483,8 +497,8 @@ func soften(x: int, y: int, z: int, target: int) -> void:
 # One pickaxe blow at `point` (metres): the ground within `radius` cells of it wears away, most
 # of all in the middle, by up to `power` of density; built blocks that can be dug wear down until
 # they break. Only what a pickaxe of `tier` can dig is touched, and treasure never is. Returns how
-# many cells broke open, the block that wore away the most and whether a hidden room's wall came
-# down.
+# many cells broke open, the block that wore away the most, whether a hidden room's wall came
+# down, and how many cells of each ore broke out ("ore": block -> cells).
 func dent(point: Vector3, radius: float, power: float, tier: int) -> Dictionary:
 	var c := point / VOXEL
 	var r2 := radius * radius
@@ -496,6 +510,7 @@ func dent(point: Vector3, radius: float, power: float, tier: int) -> Dictionary:
 	var z1 := clampi(floori(c.z + radius), 1, SZ - 2)
 	var tiers := Blocks.TIER
 	var worn := {}
+	var ore := {}
 	var removed := 0
 	var changed := false
 	var vault_hit := false
@@ -528,6 +543,8 @@ func dent(point: Vector3, radius: float, power: float, tier: int) -> Dictionary:
 								blocks[i] = Blocks.AIR
 								d = maxi(d, 0)
 								removed += 1
+								if b >= Blocks.COAL and b <= Blocks.DIAMOND:
+									ore[b] = int(ore.get(b, 0)) + 1
 							dens[i] = d
 							worn[b] = int(worn.get(b, 0)) + amount
 							changed = true
@@ -553,7 +570,7 @@ func dent(point: Vector3, radius: float, power: float, tier: int) -> Dictionary:
 	for b: int in worn:
 		if most == Blocks.AIR or int(worn[b]) > int(worn[most]):
 			most = b
-	return {"removed": removed, "block": most, "vault": vault_hit}
+	return {"removed": removed, "block": most, "vault": vault_hit, "ore": ore}
 
 
 # Blows a ball of ground away: everything within `radius` cells of `center` (cells) that `tier`
@@ -569,6 +586,7 @@ func blast(center: Vector3, radius: float, tier: int) -> Dictionary:
 	var z1 := clampi(floori(center.z + reach), 1, SZ - 2)
 	var tiers := Blocks.TIER
 	var worn := {}
+	var ore := {}
 	var removed := 0
 	var changed := false
 	var vault_hit := false
@@ -592,6 +610,8 @@ func blast(center: Vector3, radius: float, tier: int) -> Dictionary:
 								blocks[i] = Blocks.AIR
 								removed += 1
 								worn[b] = int(worn.get(b, 0)) + 1
+								if b >= Blocks.COAL and b <= Blocks.DIAMOND:
+									ore[b] = int(ore.get(b, 0)) + 1
 							changed = true
 					elif dist < radius and tiers[b] >= 0 and tiers[b] <= tier and not Blocks.is_treasure(b):
 						blocks[i] = Blocks.AIR
@@ -610,7 +630,7 @@ func blast(center: Vector3, radius: float, tier: int) -> Dictionary:
 	for b: int in worn:
 		if most == Blocks.AIR or int(worn[b]) > int(worn[most]):
 			most = b
-	return {"removed": removed, "block": most, "vault": vault_hit}
+	return {"removed": removed, "block": most, "vault": vault_hit, "ore": ore}
 
 
 # The leveller: makes the ground you're looking at flat. The plane runs through `point` (metres),
@@ -618,7 +638,8 @@ func blast(center: Vector3, radius: float, tier: int) -> Dictionary:
 # or -1). Within `half` cells of the point along the plane, ground standing up to `cut` cells
 # proud of it is cut away (as far as `tier` allows), and holes up to `fill_depth` cells deep are
 # filled with `fill_block`. Nothing is filled inside keep_lo..keep_hi (metres): that's you.
-# Treasure stays put.
+# Treasure stays put. Returns how many cells were cut away and filled in, whether a hidden
+# room's wall came down, whether anything changed, and the ore that was cut (block -> cells).
 func flatten(point: Vector3, axis: int, side: int, half: int, cut: int, fill_depth: int, tier: int, fill_block: int, keep_lo: Vector3, keep_hi: Vector3) -> Dictionary:
 	var p := point / VOXEL
 	var plane := roundi(p[axis])
@@ -628,6 +649,7 @@ func flatten(point: Vector3, axis: int, side: int, half: int, cut: int, fill_dep
 	var cv := floori(p[v])
 	var keep_c0 := Vector3i((keep_lo / VOXEL).floor())
 	var keep_c1 := Vector3i((keep_hi / VOXEL - Vector3(0.0001, 0.0001, 0.0001)).floor())
+	var ore := {}
 	var removed := 0
 	var placed := 0
 	var changed := false
@@ -658,6 +680,8 @@ func flatten(point: Vector3, axis: int, side: int, half: int, cut: int, fill_dep
 							if want < SOLID:
 								blocks[i] = Blocks.AIR
 								removed += 1
+								if b >= Blocks.COAL and b <= Blocks.DIAMOND:
+									ore[b] = int(ore.get(b, 0)) + 1
 							changed = true
 					elif Blocks.diggable(b, tier):
 						blocks[i] = Blocks.AIR
@@ -693,7 +717,7 @@ func flatten(point: Vector3, axis: int, side: int, half: int, cut: int, fill_dep
 		hi = hi.clamp(Vector3i.ZERO, Vector3i(SX - 1, SY - 1, SZ - 1))
 		_mark_edited(lo, hi)
 		_touch(lo, hi, removed > 0)
-	return {"removed": removed, "placed": placed, "vault": vault_hit, "changed": changed}
+	return {"removed": removed, "placed": placed, "vault": vault_hit, "changed": changed, "ore": ore}
 
 
 # Takes a treasure out of the ground: it's been found.
@@ -989,6 +1013,7 @@ func generate(new_seed: int, tier: int) -> void:
 	_built.resize(BX * BY * BZ)
 	_fill_columns(new_seed)
 	_add_pockets(rng)
+	_add_ores(rng)
 	_carve_caves(rng)
 	House.build_base(self, tier)
 	vaults = Vaults.generate(self, rng)
@@ -1041,33 +1066,41 @@ func _fill_columns(s: int) -> void:
 			heights[4][k] = y_clay
 			heights[5][k] = y_dirt
 	blocks = PackedByteArray()
+	# The four columns of each 2x2 group are alike, so each group's column is put together once.
+	var group: Array[PackedByteArray] = []
+	group.resize(hw)
 	for z in range(-1, SZ + 1):
 		for x in range(-1, SX + 1):
 			if x < 0 or z < 0 or x >= SX or z >= SZ:
-				_run(Blocks.BEDROCK, PY)
+				_run(blocks, Blocks.BEDROCK, PY)
 				continue
-			var k := (x >> 1) + (z >> 1) * hw
-			var bed := heights[0][k]
-			var y_slate := heights[1][k]
-			var y_stone := heights[2][k]
-			var y_soft := heights[3][k]
-			var y_clay := heights[4][k]
-			var y_dirt := heights[5][k]
-			_run(Blocks.BEDROCK, bed + 1)
-			_run(Blocks.DEEPROCK, y_slate - bed)
-			_run(Blocks.SLATE, y_stone - y_slate)
-			_run(Blocks.STONE, y_soft - y_stone)
-			_run(Blocks.DIRT, y_clay - y_soft)
-			_run(Blocks.CLAY, y_dirt - y_clay)
-			_run(Blocks.DIRT, FLOOR_Y - y_dirt)
-			_run(Blocks.BEDROCK, SY - FLOOR_Y + 1)
+			if (x & 1) == 0 and (z & 1) == 0:
+				var k := (x >> 1) + (z >> 1) * hw
+				var bed := heights[0][k]
+				var y_slate := heights[1][k]
+				var y_stone := heights[2][k]
+				var y_soft := heights[3][k]
+				var y_clay := heights[4][k]
+				var y_dirt := heights[5][k]
+				var column := PackedByteArray()
+				_run(column, Blocks.BEDROCK, bed + 1)
+				_run(column, Blocks.DEEPROCK, y_slate - bed)
+				_run(column, Blocks.SLATE, y_stone - y_slate)
+				_run(column, Blocks.STONE, y_soft - y_stone)
+				_run(column, Blocks.DIRT, y_clay - y_soft)
+				_run(column, Blocks.CLAY, y_dirt - y_clay)
+				_run(column, Blocks.DIRT, FLOOR_Y - y_dirt)
+				_run(column, Blocks.BEDROCK, SY - FLOOR_Y + 1)
+				group[x >> 1] = column
+			blocks.append_array(group[x >> 1])
 	# All of it solid ground to begin with.
 	dens = PackedByteArray()
 	dens.resize(blocks.size())
 	dens.fill(GROUND)
 
 
-func _run(b: int, length: int) -> void:
+# Adds `length` cells of block b to the end of `to`.
+func _run(to: PackedByteArray, b: int, length: int) -> void:
 	if length <= 0:
 		return
 	var cache: Dictionary = _runs[b]
@@ -1076,7 +1109,7 @@ func _run(b: int, length: int) -> void:
 		run.resize(length)
 		run.fill(b)
 		cache[length] = run
-	blocks.append_array(cache[length])
+	to.append_array(cache[length])
 
 
 # Pockets of sand and gravel in the dirt, softer veins in the rock.
@@ -1118,6 +1151,65 @@ func _blob(c: Vector3i, r: Vector3, host: int, kind: int) -> void:
 				if blocks[i] == host:
 					blocks[i] = kind
 				i += 1
+
+
+# Veins of ore and gems all through the ground, the better ones deeper down. Each is a short row
+# of lumps that takes the place of whatever plain ground was there.
+func _add_ores(rng: RandomNumberGenerator) -> void:
+	var veins: Array = Goods.VEINS
+	for n in ORE_VEINS:
+		var depth := rng.randf_range(1.0, 43.0)
+		var total := 0.0
+		for v: Dictionary in veins:
+			if depth >= float(v["depth"][0]) and depth <= float(v["depth"][1]):
+				total += float(v["weight"])
+		if total <= 0.0:
+			continue
+		var roll := rng.randf() * total
+		var vein: Dictionary = {}
+		for v: Dictionary in veins:
+			if depth >= float(v["depth"][0]) and depth <= float(v["depth"][1]):
+				roll -= float(v["weight"])
+				if roll < 0.0:
+					vein = v
+					break
+		if vein.is_empty():
+			continue
+		var kind: int = Goods.LIST[vein["good"]]["block"]
+		var p := Vector3(rng.randf_range(8.0, SX - 8.0), FLOOR_Y - depth / VOXEL, rng.randf_range(8.0, SZ - 8.0))
+		var dir := Vector3(rng.randf_range(-1.0, 1.0), rng.randf_range(-0.4, 0.4), rng.randf_range(-1.0, 1.0)).normalized()
+		for k in rng.randi_range(int(vein["lumps"][0]), int(vein["lumps"][1])):
+			var r := rng.randf_range(float(vein["size"][0]), float(vein["size"][1])) * 0.5 / VOXEL
+			_lump(p, Vector3(r * rng.randf_range(0.8, 1.2), r * rng.randf_range(0.55, 0.85), r * rng.randf_range(0.8, 1.2)), kind)
+			p += dir * r * 1.3
+
+
+# Turns an ellipsoid of cells (centre c and radii r, in cells) into `kind`. Nothing has been dug
+# or built yet, so everything between the bedrock below (never more than 10 cells deep) and
+# the house floor is plain ground.
+func _lump(c: Vector3, r: Vector3, kind: int) -> void:
+	var z0 := maxi(ceili(c.z - r.z - 0.5), 1)
+	var z1 := mini(floori(c.z + r.z - 0.5), SZ - 2)
+	for z in range(z0, z1 + 1):
+		var dz := (z + 0.5 - c.z) / r.z
+		var qz := 1.0 - dz * dz
+		if qz <= 0.0:
+			continue
+		var hx := r.x * sqrt(qz)
+		var x0 := maxi(ceili(c.x - hx - 0.5), 1)
+		var x1 := mini(floori(c.x + hx - 0.5), SX - 2)
+		var row := (z + 1) * STRIDE_Z + 1
+		for x in range(x0, x1 + 1):
+			var dx := (x + 0.5 - c.x) / r.x
+			var q := qz - dx * dx
+			if q <= 0.0:
+				continue
+			var hy := r.y * sqrt(q)
+			var y0 := maxi(ceili(c.y - hy - 0.5), 11)
+			var y1 := mini(floori(c.y + hy - 0.5), FLOOR_Y - 1)
+			var i := row + (x + 1) * STRIDE_X + y0
+			for k in y1 - y0 + 1:
+				blocks[i + k] = kind
 
 
 # A few winding caves, all well below the house, with smooth walls.

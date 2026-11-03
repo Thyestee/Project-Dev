@@ -1,11 +1,13 @@
 extends Node3D
-# Deep Finds: take the stairs down from your house, dig for lost treasure with a metal detector,
-# break into hidden rooms and fight their guards for better gear, and spend what you find on
-# your gear and your house.
+# Deep Finds: take the stairs down from your house and dig. Every wall hides ore and gems, better
+# the deeper you go, and now and then a lost treasure. Carry what you find home to sell it or
+# smelt it at the forge into better gear, break into hidden rooms and fight their guards, and
+# spend what you earn on your gear and your house.
 
 const Blocks := preload("res://scripts/blocks.gd")
 const Treasures := preload("res://scripts/treasures.gd")
 const Items := preload("res://scripts/items.gd")
+const Goods := preload("res://scripts/goods.gd")
 const Catalog := preload("res://scripts/catalog.gd")
 const World := preload("res://scripts/world.gd")
 const House := preload("res://scripts/house.gd")
@@ -19,14 +21,15 @@ const Enemies := preload("res://scripts/enemies.gd")
 const Projectiles := preload("res://scripts/projectiles.gd")
 
 const SAVE_PATH := "user://deep_finds_save.json"
-const SAVE_VERSION := 4
-const DETECTOR_RANGE := 14.0
+const SAVE_VERSION := 5
 const AUTOSAVE_SECONDS := 30.0
-const BAG_SIZE := 16
 const RESTED_SECONDS := 600.0
 const LEVEL_CUT := 12
 const LEVEL_FILL := 8
 const DIG_POWER := 560.0      # density a pickaxe blow takes off the middle of its dent (see World.dent)
+const BLAST_ORE := 0.5        # share of the ore an explosion leaves in one piece
+const TREASURE_HINT := 3.0    # metres: this close to buried treasure, your pick rings
+const WARN := Color(1.0, 0.6, 0.45)
 
 var world
 var player
@@ -39,28 +42,29 @@ var projectiles
 var env: Environment
 var state := "starting"   # starting, loading, title, playing, menu, paused, confirm, dead
 var found := {}           # treasure type -> how many you've ever found
+var mined := {}           # good id -> how many pieces you've ever dug out
 var coins := 0
-var bag: Array = []       # gear in your pack
+var bag: Array = []       # your pack: gear, ore, bars and treasure (see Goods)
 var equipped := {"pickaxe": {}, "sword": {}, "mace": {}, "bow": {}, "shield": {}}
 var supplies := {"arrows": 0, "dynamite": 0, "charge": 0}
-var workshop := {"grip": 0, "size": 0}
+var workshop := {"grip": 0, "size": 0, "pack": 0}
 var house_tier := 0
 var decor: Array = []         # decorations you own, in the order you bought them
 var furniture: Array = []     # placed furniture: {"id", "type", "x", "z", "rot"}
 var unplaced: Array = []      # furniture you've bought or picked up but not put down yet
-var storage := {}             # furniture id (as text) -> the gear inside
+var storage := {}             # furniture id (as text) -> what's inside
 var next_furniture_id := 1
 var vault_state: Array = []   # per hidden room: {"opened", "dead": [guard numbers], "chests": {number: [gear]}}
 var explosive_index := 0
-var detector_on := true
 var rested := 0.0
 var tracked := -1             # the hidden room your compass points at
 var _rng := RandomNumberGenerator.new()
 var _has_save := false
 var _new_game := false
-var _beep_timer := 0.0
 var _autosave := 0.0
 var _time := 0.0
+var _ore_dust := {}           # good id -> cells of it dug towards the next piece
+var _notes := {}              # message -> seconds before it may show again
 
 
 func _ready() -> void:
@@ -146,7 +150,10 @@ func _process(delta: float) -> void:
 		enemies.update(d)
 		projectiles.update(d)
 		rested = maxf(0.0, rested - d)
-		_update_detector(d)
+		for key: String in _notes.keys():
+			_notes[key] = float(_notes[key]) - d
+			if float(_notes[key]) <= 0.0:
+				_notes.erase(key)
 		_autosave += d
 		if _autosave >= AUTOSAVE_SECONDS:
 			_autosave = 0.0
@@ -163,9 +170,6 @@ func _unhandled_input(event: InputEvent) -> void:
 					stop_placing()
 				else:
 					pause()
-			elif event.is_action_pressed("detector"):
-				detector_on = not detector_on
-				_beep_timer = 0.0
 			elif event.is_action_pressed("journal"):
 				open_menu("journal")
 			elif event.is_action_pressed("inventory"):
@@ -214,7 +218,7 @@ func start_playing() -> void:
 	resume()
 	if _new_game:
 		_new_game = false
-		toast("Take the stairs down, switch on your detector and start digging.")
+		toast("Take the stairs down and dig for ore. When your pack is full, bring it home.")
 
 
 func resume() -> void:
@@ -233,7 +237,7 @@ func pause() -> void:
 	save_game()
 
 
-# Opens one of the menus: shop, inventory, journal, anvil, map, or a chest (with `data`).
+# Opens one of the menus: shop, forge, inventory, journal, anvil, map, or a chest (with `data`).
 func open_menu(menu: String, data = null) -> void:
 	state = "menu"
 	player.set_active(false)
@@ -259,7 +263,7 @@ func cancel_new_world() -> void:
 		show_title()
 
 
-# A fresh patch of ground with new treasure and new hidden rooms. Everything you own carries over.
+# A fresh patch of ground with new ore, treasure and hidden rooms. Everything you own carries over.
 func new_world() -> void:
 	var data := _save_data()
 	data["seed"] = randi()
@@ -281,6 +285,13 @@ func save_and_quit() -> void:
 
 func toast(text: String, color := Color(0.93, 0.91, 0.86)) -> void:
 	hud.toast(text, color)
+
+
+# A toast that waits `wait` seconds before it shows again, for things that happen over and over.
+func note(text: String, color := Color(0.93, 0.91, 0.86), wait := 20.0) -> void:
+	if not _notes.has(text):
+		_notes[text] = wait
+		toast(text, color)
 
 
 func shake(amount: float, at: Vector3) -> void:
@@ -314,7 +325,7 @@ func cycle() -> void:
 		hud.refresh()
 
 
-# Bonuses from every piece of equipped gear: vitality, regen, swift and sense.
+# Bonuses from every piece of equipped gear: vitality, regen and swift.
 func global_affix(id: String) -> float:
 	var total := 0.0
 	for kind: String in equipped:
@@ -362,7 +373,9 @@ func show_target() -> void:
 	var b: int = t["block"]
 	var rec := furniture_at(c)
 	if House.is_workbench(c):
-		hud.set_target("Workbench  ·  E to buy things", Hud.GOLD)
+		hud.set_target("Workbench  ·  E to buy and sell", Hud.GOLD)
+	elif House.is_forge(c):
+		hud.set_target("Forge  ·  E to smelt ore and forge gear", Hud.GOLD)
 	elif not rec.is_empty():
 		var def: Dictionary = Catalog.FURNITURE[rec["type"]]
 		var verb: String = def["verb"]
@@ -381,6 +394,8 @@ func show_target() -> void:
 		hud.set_target("A buried chest  ·  E to dig it up", Hud.GOLD)
 	elif Blocks.TIER[b] > Items.hardness(equipped["pickaxe"]):
 		hud.set_target("%s  ·  needs %s pickaxe" % [Blocks.NAMES[b], _article(Items.TIER_NAMES["pickaxe"][Blocks.TIER[b]])], Color(1.0, 0.55, 0.45))
+	elif Blocks.is_ore(b):
+		hud.set_target(Blocks.NAMES[b], Goods.LIST[Goods.BLOCK_GOOD[b]]["color"])
 	else:
 		hud.set_target(Blocks.NAMES[b])
 
@@ -397,6 +412,8 @@ func interact() -> void:
 	var rec := furniture_at(c)
 	if House.is_workbench(c):
 		open_menu("shop")
+	elif House.is_forge(c):
+		open_menu("forge")
 	elif not rec.is_empty():
 		match rec["type"]:
 			"bed":
@@ -440,8 +457,8 @@ func swing_time(b: int) -> float:
 	return base * pow(0.85, spare) / (float(Catalog.GRIPS[workshop["grip"]]["speed"]) * Items.dig_speed(item))
 
 
-# The pickaxe lands: it wears a dent in the ground around where you aimed. Treasure it uncovers
-# stays in the ground until you pick it up (E).
+# The pickaxe lands: it wears a dent in the ground around where you aimed, and any ore it breaks
+# out goes into your pack. Treasure it uncovers stays in the ground until you pick it up (E).
 func on_swing_hit(target: Dictionary) -> void:
 	var cell: Vector3i = target["cell"]
 	var b: int = target["block"]
@@ -455,14 +472,13 @@ func on_swing_hit(target: Dictionary) -> void:
 		_dummy_hit(point, Items.damage(item))
 		player.impact(0.6, false)
 		return
+	hit_sound(b)
 	if Blocks.is_treasure(b):
-		sfx.play("clink", randf_range(1.2, 1.4), -6.0)
 		effects.sparks(point, normal)
 		player.impact(0.6, true)
 		toast("Careful with that! Press E to dig it out.", Hud.GOLD)
 		return
 	if tier < 0:
-		sfx.play("clink", randf_range(0.9, 1.1), -4.0)
 		effects.sparks(point, normal)
 		player.impact(1.0, true)
 		if b == Blocks.BEDROCK:
@@ -475,10 +491,9 @@ func on_swing_hit(target: Dictionary) -> void:
 			toast("Better not dig up your own house.")
 		return
 	if tier > hardness:
-		sfx.play("clink", randf_range(0.9, 1.1), -4.0)
 		effects.sparks(point, normal)
 		player.impact(1.0, true)
-		toast("Too hard! %s needs %s pickaxe. Buy one at your workbench." % [Blocks.NAMES[b], _article(Items.TIER_NAMES["pickaxe"][tier])], Color(1.0, 0.65, 0.5))
+		toast("Too hard! %s needs %s pickaxe. Make one at your forge." % [Blocks.NAMES[b], _article(Items.TIER_NAMES["pickaxe"][tier])], Color(1.0, 0.65, 0.5))
 		return
 	var radius := dig_radius()
 	var power := DIG_POWER
@@ -493,17 +508,73 @@ func on_swing_hit(target: Dictionary) -> void:
 			var more: Dictionary = world.blast((point + dir * (k * 0.5)) / World.VOXEL, maxf(radius * 1.2, 3.6), hardness)
 			result["removed"] = int(result["removed"]) + int(more["removed"])
 			result["vault"] = result["vault"] or more["vault"]
-	sfx.play("dig", randf_range(0.8, 1.15), -3.0)
+			for ore: int in more["ore"]:
+				result["ore"][ore] = int(result["ore"].get(ore, 0)) + int(more["ore"][ore])
 	player.impact(0.7 if tier > 0 else 0.5, false)
 	var color: Color = Blocks.COLORS[b]
 	effects.debris(point, normal, color, 8 + mini(int(result["removed"]) / 4, 16))
+	if Blocks.is_ore(b):
+		effects.burst(point + normal * 0.05, Blocks.FLECKS[b], 6, 2.4, 0.03, normal, 50.0, 12.0, 0.6, Blocks.GLOW[b] > 0.2)
 	if int(result["removed"]) > 0:
-		sfx.play("break", randf_range(0.85, 1.1), -6.0 if int(result["removed"]) < 20 else -2.0)
+		sfx.play("break", randf_range(0.85, 1.1), -9.0 if int(result["removed"]) < 20 else -5.0)
 		effects.dust(point, color.darkened(0.3))
 	if strong:
 		effects.sparks(point, normal)
 		player.impact(0.5, true)
+	_collect_ore(result["ore"], point, 1.0, item)
+	_listen_for_treasure(point)
 	_check_vaults(result, point / World.VOXEL, radius)
+
+
+# What a blow sounds like depends on what it lands on: a thud in dirt, a crunch in sand or
+# gravel, a crack in stone, a clank off deeprock, a ring off ore and metal, a chime off gems.
+func hit_sound(b: int, volume := -3.0) -> void:
+	var surface: String = Blocks.SOUND[b]
+	if surface == "":
+		return
+	var pitch := randf_range(0.93, 1.07)
+	if Blocks.is_ore(b):
+		pitch *= 0.9 + 0.05 * (b - Blocks.COAL)
+	sfx.play("pick_" + surface, pitch, volume)
+
+
+# Ore and gems you break out go into your pack: a piece for every so many cells of it. `share`
+# is how much of it survives (explosions shatter some).
+func _collect_ore(ore: Dictionary, point: Vector3, share: float, item := {}) -> void:
+	if ore.is_empty():
+		return
+	var luck := 1.0 + Items.affix(item, "lucky") / 100.0
+	var rise := 0.0
+	var lost := false
+	for b: int in ore:
+		var id: String = Goods.BLOCK_GOOD[b]
+		var per := float(Goods.LIST[id]["cells"])
+		var dust := float(_ore_dust.get(id, 0.0)) + int(ore[b]) * share * luck
+		var n := floori(dust / per)
+		_ore_dust[id] = dust - n * per
+		if n <= 0:
+			continue
+		var added: int = Goods.add(bag, pack_slots(), id, n)
+		if added > 0:
+			mined[id] = int(mined.get(id, 0)) + added
+			effects.number(point + Vector3(0.0, 0.15 + rise, 0.0), "+%d %s" % [added, Goods.LIST[id]["name"]], Goods.LIST[id]["color"])
+			rise += 0.16
+		lost = lost or added < n
+	if rise > 0.0:
+		sfx.play("pickup", randf_range(1.0, 1.15), -13.0)
+		hud.refresh()
+	if lost:
+		note("Your pack is full! Head home to sell, smelt or store what you've found.", WARN, 8.0)
+
+
+# Close to buried treasure, your pick rings: the nearer it is, the clearer.
+func _listen_for_treasure(point: Vector3) -> void:
+	var d: float = world.nearest_treasure_distance(point)
+	if d >= TREASURE_HINT:
+		return
+	var k := 1.0 - d / TREASURE_HINT
+	sfx.play("ring", 0.9 + 0.3 * k, -18.0 + 12.0 * k)
+	note("Your pick rings oddly... something is buried close by.", Hud.GOLD, 30.0)
 
 
 # A hidden room you broke into wakes up.
@@ -515,14 +586,15 @@ func _check_vaults(result: Dictionary, center: Vector3, radius: float) -> void:
 
 
 # The leveller: flattens the floor, wall or ceiling you're looking at, cutting away bumps and
-# filling dips with the ground around them.
+# filling dips with the ground around them. What it cuts is ground to dust, ore and all.
 func on_level(target: Dictionary) -> void:
 	var item: Dictionary = equipped["pickaxe"]
 	var half := level_half()
 	var face: Vector3i = target["face"]
 	var axis := 0 if face.x != 0 else (1 if face.y != 0 else 2)
 	var b: int = target["block"]
-	var fill_block := b if Blocks.is_natural(b) else Blocks.DIRT
+	var cell: Vector3i = target["cell"]
+	var fill_block := b if Blocks.is_natural(b) and not Blocks.is_ore(b) else World.rock_at(cell.y)
 	var point: Vector3 = target["point"]
 	var result: Dictionary = world.flatten(point, axis, face[axis], half, LEVEL_CUT, LEVEL_FILL, Items.hardness(item), fill_block, player.body.lo(), player.body.hi())
 	if not result["changed"]:
@@ -532,11 +604,16 @@ func on_level(target: Dictionary) -> void:
 	sfx.play("level", randf_range(0.9, 1.1))
 	effects.dust(point)
 	effects.debris(point, Vector3(face), Blocks.COLORS[b], 10)
+	if not (result["ore"] as Dictionary).is_empty():
+		note("The leveller grinds ore to dust. Dig ore out with your pickaxe.", WARN, 30.0)
 	_check_vaults(result, point / World.VOXEL, float(half))
 
 
-# E on treasure you've uncovered: it comes out of the ground.
+# E on treasure you've uncovered: it comes out of the ground and into your pack.
 func _dig_out(t: int) -> void:
+	if bag_full():
+		toast("Your pack is full. Make room before you dig this out.", WARN)
+		return
 	var info: Dictionary = world.treasure_list[t]
 	world.collect(t)
 	effects.debris(info["center"], Vector3.UP, Blocks.COLORS[Blocks.DIRT], 14)
@@ -547,7 +624,7 @@ func _found_treasure(t: int, where: Vector3, item := {}) -> void:
 	found[t] = int(found.get(t, 0)) + 1
 	var info: Dictionary = Treasures.LIST[t]
 	var value := roundi(int(info["value"]) * (1.0 + Items.affix(item, "prospector") / 100.0))
-	coins += value
+	bag.append({"kind": "treasure", "id": t, "value": value})
 	sfx.play("treasure")
 	effects.burst(where, Hud.GOLD, 24, 3.0, 0.05)
 	hud.show_find(t, value)
@@ -558,23 +635,6 @@ func _found_treasure(t: int, where: Vector3, item := {}) -> void:
 	save_game()
 
 
-func _update_detector(delta: float) -> void:
-	if not detector_on:
-		hud.set_detector(false, 0.0, false)
-		return
-	var distance: float = world.nearest_treasure_distance(player.camera.global_position)
-	var strength := clampf(1.0 - distance / (DETECTOR_RANGE + global_affix("sense")), 0.0, 1.0)
-	var beeped := false
-	if strength > 0.0:
-		_beep_timer -= delta
-		if _beep_timer <= 0.0:
-			_beep_timer = lerpf(1.1, 0.08, pow(strength, 1.3))
-			sfx.play("beep", 0.8 + strength * 0.9, -8.0 + strength * 6.0)
-			player.flash_led(strength)
-			beeped = true
-	hud.set_detector(true, strength, beeped)
-
-
 # --- Explosions -----------------------------------------------------------------------------
 
 func explode_bomb(kind: String, pos: Vector3) -> void:
@@ -582,12 +642,14 @@ func explode_bomb(kind: String, pos: Vector3) -> void:
 	explode(pos, float(def["radius"]), int(def["tier"]), float(def["damage"]), {}, 0.6)
 
 
-# Blows a ball of ground apart, hurting everything nearby (you included, by `self_harm`).
+# Blows a ball of ground apart, hurting everything nearby (you included, by `self_harm`). Some of
+# the ore it breaks survives in one piece.
 func explode(pos: Vector3, radius: float, tier: int, damage: float, item: Dictionary, self_harm: float) -> void:
 	var center := pos / World.VOXEL
 	var result: Dictionary = world.blast(center, radius / World.VOXEL, tier)
 	var color: Color = Blocks.COLORS[result["block"] if int(result["block"]) != Blocks.AIR else Blocks.DIRT]
 	_check_vaults(result, center, radius / World.VOXEL)
+	_collect_ore(result["ore"], pos, BLAST_ORE)
 	var reach := radius * 1.8
 	for e in enemies.near(pos, reach):
 		var falloff := clampf(1.0 - e.body.position.distance_to(pos) / reach, 0.3, 1.0)
@@ -640,7 +702,7 @@ func melee_hit_block(target: Dictionary, item: Dictionary, damage: float) -> voi
 		var crit := _rng.randf() * 100.0 < Items.affix(item, "crit")
 		_dummy_hit(point, damage * (2.0 if crit else 1.0), crit)
 		return
-	sfx.play("clink", randf_range(0.7, 0.9), -8.0)
+	hit_sound(int(target["block"]), -8.0)
 	effects.sparks(point, target["normal"])
 
 
@@ -666,6 +728,7 @@ func earthshake(item: Dictionary, at: Vector3, damage: float) -> void:
 		enemies.hurt(e, damage * 0.5, at, {"knockback": 5.0, "stun": 1.0, "item": item})
 	var result: Dictionary = world.blast(at / World.VOXEL, 1.0 / World.VOXEL, 1)
 	_check_vaults(result, at / World.VOXEL, 8.0)
+	_collect_ore(result["ore"], at, BLAST_ORE)
 
 
 func arrow_hit_enemy(p: Dictionary, e, at: Vector3) -> void:
@@ -779,7 +842,7 @@ func _setup_vaults(saved: Array) -> void:
 			for key in chests:
 				var list := []
 				for d in chests[key]:
-					var item := Items.sanitize(d)
+					var item := Goods.sanitize(d)
 					if not item.is_empty():
 						list.append(item)
 				st["chests"][str(key)] = list
@@ -832,12 +895,29 @@ func chest_closed(data: Dictionary) -> void:
 # --- Your house ---------------------------------------------------------------------------------
 
 # Decorations, trophies and furniture on top of the house the world was generated with.
+# Furniture standing where the forge now is (from before there was one) moves out of its way.
 func _furnish() -> void:
 	for id: String in decor:
 		House.apply_decor(world, id, house_tier)
 	House.show_trophies(world, decor, found, house_tier)
+	var in_the_way: Array = []
 	for rec: Dictionary in furniture:
-		House.build_furniture(world, rec)
+		if House.blocks_fixture(rec):
+			in_the_way.append(rec)
+		else:
+			House.build_furniture(world, rec)
+	for rec: Dictionary in in_the_way:
+		var spot: Vector2i = House.free_spot(world, rec["type"], rec["rot"], house_tier)
+		if spot.x >= 0:
+			rec["x"] = spot.x
+			rec["z"] = spot.y
+			House.build_furniture(world, rec)
+			continue
+		# Nowhere to put it: back in your pack to place again, and whatever was in it with it.
+		furniture.erase(rec)
+		unplaced.append(rec["type"])
+		bag.append_array(storage.get(str(rec["id"]), []))
+		storage.erase(str(rec["id"]))
 	_update_lights()
 
 
@@ -882,7 +962,7 @@ func move_furniture() -> void:
 		return
 	var key := str(rec["id"])
 	if storage.has(key) and not (storage[key] as Array).is_empty():
-		toast("Empty it first: take your gear out before moving it.")
+		toast("Empty it first: take everything out before moving it.")
 		return
 	House.remove_furniture(world, rec)
 	furniture.erase(rec)
@@ -898,14 +978,20 @@ func move_furniture() -> void:
 	sfx.play("place", 0.7)
 
 
-# --- Gear --------------------------------------------------------------------------------------
+# --- Your pack and gear ------------------------------------------------------------------------
+
+func pack_slots() -> int:
+	return int(Catalog.PACKS[workshop["pack"]]["slots"])
+
 
 func bag_full() -> bool:
-	return bag.size() >= BAG_SIZE
+	return bag.size() >= pack_slots()
 
 
 func equip(i: int) -> void:
 	var item: Dictionary = bag[i]
+	if not Goods.is_gear(item):
+		return
 	var kind: String = item["kind"]
 	var old: Dictionary = equipped[kind]
 	equipped[kind] = item
@@ -935,39 +1021,69 @@ func _gear_changed() -> void:
 	menus.refresh()
 
 
-# Moves gear between a chest and your pack.
+# Moves something from a chest into your pack. Goods top up the stacks you already carry, so a
+# stack may only partly fit.
 func take_item(container: Array, i: int) -> void:
-	if bag_full():
+	var item: Dictionary = container[i]
+	var before := int(item.get("count", 1))
+	if Goods.put(bag, pack_slots(), item):
+		container.remove_at(i)
+		sfx.play("pickup", 1.0, -6.0)
+	else:
+		if Goods.is_good(item) and int(item["count"]) < before:
+			sfx.play("pickup", 1.0, -6.0)
 		toast("Your pack is full. Put something away first.")
-		return
-	bag.append(container[i])
-	container.remove_at(i)
-	sfx.play("pickup", 1.0, -6.0)
+	hud.refresh()
 	menus.refresh()
 
 
 func store_item(container: Array, slots: int, i: int) -> void:
-	if container.size() >= slots:
+	var item: Dictionary = bag[i]
+	if Goods.put(container, slots, item):
+		bag.remove_at(i)
+		sfx.play("place", 1.1, -6.0)
+	else:
 		toast("It's full.")
-		return
-	container.append(bag[i])
-	bag.remove_at(i)
-	sfx.play("place", 1.1, -6.0)
+	hud.refresh()
 	menus.refresh()
 
 
 func take_all(container: Array) -> void:
-	while not container.is_empty() and not bag_full():
-		bag.append(container[0])
-		container.remove_at(0)
+	var i := 0
+	while i < container.size():
+		if Goods.put(bag, pack_slots(), container[i]):
+			container.remove_at(i)
+		else:
+			i += 1
 	if not container.is_empty():
 		toast("Your pack is full.")
 	sfx.play("pickup", 1.0, -6.0)
+	hud.refresh()
+	menus.refresh()
+
+
+# Puts away everything in your pack that isn't gear: ore, gems, bars and treasure.
+func store_finds(container: Array, slots: int) -> void:
+	var i := 0
+	var full := false
+	while i < bag.size():
+		var item: Dictionary = bag[i]
+		if not Goods.is_gear(item) and Goods.put(container, slots, item):
+			bag.remove_at(i)
+		else:
+			full = full or not Goods.is_gear(item)
+			i += 1
+	if full:
+		toast("It's full.")
+	sfx.play("place", 1.1, -6.0)
+	hud.refresh()
 	menus.refresh()
 
 
 func salvage(i: int) -> void:
 	var item: Dictionary = bag[i]
+	if not Goods.is_gear(item):
+		return
 	var value := Items.salvage_value(item)
 	coins += value
 	bag.remove_at(i)
@@ -984,6 +1100,107 @@ func reforge(item: Dictionary, k: int) -> void:
 	coins -= cost
 	Items.reforge(item, k, _rng)
 	sfx.play("anvil", randf_range(0.95, 1.05))
+	_gear_changed()
+	save_game()
+
+
+# --- Selling and the forge -----------------------------------------------------------------------
+
+# The workbench buys everything you dig up or smelt, and treasure.
+func sell(i: int) -> void:
+	var value := Goods.worth(bag[i])
+	if value <= 0:
+		return
+	var what := Goods.title(bag[i])
+	bag.remove_at(i)
+	coins += value
+	sfx.play("coin")
+	toast("Sold %s for %s coins." % [what, Hud.thousands(value)], Hud.GOLD)
+	_bought()
+
+
+# Sells everything of one sort: "ore" (ore and gems), "bar" or "treasure".
+func sell_all(sort: String) -> void:
+	var total := 0
+	var i := bag.size() - 1
+	while i >= 0:
+		var item: Dictionary = bag[i]
+		if Goods.sort_of(item) == sort:
+			total += Goods.worth(item)
+			bag.remove_at(i)
+		i -= 1
+	if total <= 0:
+		return
+	coins += total
+	sfx.play("coin")
+	toast("Sold for %s coins." % Hud.thousands(total), Hud.GOLD)
+	_bought()
+
+
+# Smelts a recipe up to `times` times over, as far as your pack has what it needs. The batch is
+# worked out as a whole, so a full pack can still smelt once the ore it uses up makes room.
+func smelt(k: int, times: int) -> void:
+	var recipe: Dictionary = Goods.SMELT[k]
+	var needs: Dictionary = recipe["in"]
+	var n := mini(times, Goods.times(bag, needs))
+	while n > 0:
+		var after := _smelted(needs, recipe["out"], n)
+		if not after.is_empty():
+			bag.clear()
+			bag.append_array(after)
+			break
+		n -= 1
+	if n > 0:
+		sfx.play("hiss", 0.7, -4.0)
+		sfx.play("anvil", 1.3, -10.0)
+		toast("Smelted %s." % Goods.amount(recipe["out"], n), Hud.GOLD)
+	elif Goods.times(bag, needs) > 0:
+		toast("Your pack is full. Make room first.", WARN)
+	hud.refresh()
+	menus.refresh()
+	save_game()
+
+
+# Your pack after smelting n times, or [] if the bars wouldn't fit. Your pack is left as it is.
+func _smelted(needs: Dictionary, out: String, n: int) -> Array:
+	var after := []
+	for item: Dictionary in bag:
+		after.append(item.duplicate() if Goods.is_good(item) else item)
+	for id: String in needs:
+		Goods.take(after, id, int(needs[id]) * n)
+	if Goods.add(after, pack_slots(), out, n) < n:
+		return []
+	return after
+
+
+# Forges a piece of plain metal gear. It's equipped straight away if it beats plain gear you
+# have on; otherwise it goes in your pack.
+func forge_gear(k: int) -> void:
+	var recipe: Dictionary = Goods.FORGE[k]
+	var needs: Dictionary = recipe["in"]
+	if Goods.times(bag, needs) < 1:
+		return
+	for id: String in needs:
+		Goods.take(bag, id, int(needs[id]))
+	var kind: String = recipe["kind"]
+	var item := Items.make(kind, int(recipe["tier"]), 0, _rng)
+	var old: Dictionary = equipped[kind]
+	var better: bool = old.is_empty() or (int(old["rarity"]) == 0 and int(old["tier"]) < int(item["tier"]))
+	if better and (old.is_empty() or not bag_full()):
+		equipped[kind] = item
+		if not old.is_empty():
+			bag.append(old)
+		toast("%s forged and equipped." % Items.base_name(item), Hud.GOLD)
+	elif not bag_full():
+		bag.append(item)
+		toast("%s forged. It's in your pack: equip it from there (I)." % Items.base_name(item), Hud.GOLD)
+	else:
+		for id: String in needs:
+			Goods.add(bag, bag.size() + needs.size(), id, int(needs[id]))
+		toast("Your pack is full. Make room for it first.", WARN)
+		return
+	sfx.play("anvil")
+	sfx.play("hiss", 0.9, -8.0)
 	_gear_changed()
 	save_game()
 
@@ -1089,7 +1306,6 @@ func _setup_input() -> void:
 		"jump": [KEY_SPACE],
 		"sprint": [KEY_SHIFT],
 		"crouch": [KEY_CTRL, KEY_C],
-		"detector": [KEY_F],
 		"journal": [KEY_TAB, KEY_J],
 		"inventory": [KEY_I],
 		"interact": [KEY_E],
@@ -1128,6 +1344,7 @@ func _save_data() -> Dictionary:
 		"seed": world.world_seed,
 		"edits": world.edits_data(),
 		"found": found,
+		"mined": mined,
 		"coins": coins,
 		"bag": bag,
 		"equipped": equipped,
@@ -1139,7 +1356,6 @@ func _save_data() -> Dictionary:
 		"player": [p.x, p.y, p.z, player.yaw, player.pitch],
 		"health": player.health,
 		"rested": rested,
-		"detector": detector_on,
 		"slot": player.slot,
 		"explosive": explosive_index,
 		"tracked": tracked,
@@ -1150,10 +1366,14 @@ func _load_progress(save: Dictionary) -> void:
 	var saved_found: Dictionary = save.get("found", {})
 	for k in saved_found:
 		found[int(k)] = int(saved_found[k])
+	var saved_mined: Dictionary = save.get("mined", {})
+	for id in saved_mined:
+		if Goods.LIST.has(str(id)):
+			mined[str(id)] = maxi(0, int(saved_mined[id]))
 	coins = int(save.get("coins", 0))
 	for d in save.get("bag", []):
-		var item := Items.sanitize(d)
-		if not item.is_empty() and bag.size() < BAG_SIZE:
+		var item := Goods.sanitize(d)
+		if not item.is_empty():
 			bag.append(item)
 	var saved_equipped: Dictionary = save.get("equipped", {})
 	for kind: String in equipped:
@@ -1186,12 +1406,11 @@ func _load_progress(save: Dictionary) -> void:
 		if Catalog.FURNITURE[rec["type"]].has("slots"):
 			var list := []
 			for d in saved_storage.get(str(rec["id"]), []):
-				var item := Items.sanitize(d)
+				var item := Goods.sanitize(d)
 				if not item.is_empty():
 					list.append(item)
 			storage[str(rec["id"])] = list
 	rested = maxf(0.0, float(save.get("rested", 0.0)))
-	detector_on = bool(save.get("detector", true))
 	explosive_index = clampi(int(save.get("explosive", 0)), 0, Catalog.EXPLOSIVE_ORDER.size() - 1)
 	tracked = int(save.get("tracked", -1))
 
@@ -1219,14 +1438,21 @@ func _read_save() -> Dictionary:
 	match int(data.get("version", 0)):
 		SAVE_VERSION:
 			return data
-		3:
-			# A save from 0.3 keeps everything you own, but its dig site was dug out of cubes:
-			# you start again at a fresh one.
+		3, 4:
+			# A save from 0.3 or 0.4 keeps everything you own, but its dig site has no ore: you
+			# start again at a fresh one, with a pack big enough for the gear you were carrying.
 			data["version"] = SAVE_VERSION
 			data["seed"] = randi()
 			data["edits"] = {}
 			data["vaults"] = []
 			data["tracked"] = -1
 			data.erase("player")
+			var carried := (data.get("bag", []) as Array).size()
+			var level := 0
+			while level < Catalog.PACKS.size() - 1 and int(Catalog.PACKS[level]["slots"]) < carried:
+				level += 1
+			var saved_workshop: Dictionary = data.get("workshop", {})
+			saved_workshop["pack"] = level
+			data["workshop"] = saved_workshop
 			return data
 	return {}

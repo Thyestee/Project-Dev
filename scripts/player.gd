@@ -1,7 +1,7 @@
 extends Node3D
 # You: first-person walking (ducking and crawling through tight spots on your own), health and
 # stamina, and what you hold: the pickaxe, the leveller, a sword or a mace (with your shield on
-# the other arm), a bow, or explosives. The metal detector sits in your free hand while you dig.
+# the other arm), a bow, or explosives.
 
 const Blocks := preload("res://scripts/blocks.gd")
 const Items := preload("res://scripts/items.gd")
@@ -49,18 +49,6 @@ const BOMB_POS := Vector3(0.3, -0.38, -0.56)
 const BOW_POS := Vector3(0.06, -0.3, -0.6)
 const SHIELD_POS := Vector3(-0.46, -0.48, -0.62)
 const SHIELD_UP := Vector3(-0.12, -0.26, -0.44)
-const DETECTOR_POS := Vector3(-0.4, -0.36, -0.62)
-
-const LED_SHADER := """
-shader_type spatial;
-render_mode unshaded, cull_back, fog_disabled, depth_draw_always;
-uniform float glow = 0.0;
-void fragment() {
-	ALBEDO = vec3(0.1, 0.45, 0.16) + vec3(0.25, 0.9, 0.35) * glow;
-	DEPTH = 0.97 + 0.03 * FRAGCOORD.z;
-	ALPHA = 1.0;
-}
-"""
 
 var game
 var world
@@ -107,14 +95,11 @@ var _hitstop := 0.0
 var _sway := Vector2.ZERO
 var _bob := 0.0
 var _step_dist := 0.0
-var _led_glow := 0.0
 var _hand: Node3D
 var _tools := {}          # slot name -> Node3D in your right hand
 var _bow: Node3D
 var _nocked: Node3D
 var _shield: Node3D
-var _detector: Node3D
-var _led_mat: ShaderMaterial
 var _line_mat: StandardMaterial3D
 var _outline: MeshInstance3D
 var _ring: MeshInstance3D       # where the pickaxe will dent the ground
@@ -156,7 +141,6 @@ func _ready() -> void:
 	_ghost.top_level = true
 	_ghost.visible = false
 	add_child(_ghost)
-	_build_detector()
 	set_active(false)
 
 
@@ -214,10 +198,6 @@ func teleport(p: Vector3) -> void:
 	body.position = world.spawn_point()
 	body.cur_height = HEIGHT
 	position = body.position
-
-
-func flash_led(strength: float) -> void:
-	_led_glow = 0.4 + 0.6 * strength
 
 
 func max_health() -> float:
@@ -502,7 +482,7 @@ func _use_melee(delta: float, held: bool, kind: String) -> void:
 	var item: Dictionary = game.equipped[kind]
 	if item.is_empty():
 		if held:
-			game.toast("You don't have a %s yet. Buy one at the workbench, or find one in a hidden room." % kind)
+			game.toast("You don't have a %s yet. Make one at your forge, or find one in a hidden room." % kind)
 			_armed = false
 		return
 	if _acting:
@@ -851,24 +831,6 @@ func _shield_boxes(item: Dictionary) -> Array:
 	]
 
 
-func _build_detector() -> void:
-	_detector = Node3D.new()
-	camera.add_child(_detector)
-	_detector.position = DETECTOR_POS
-	_detector.rotation = Vector3(0.65, -0.3, 0.0)
-	_detector.scale = Vector3(0.85, 0.85, 0.85)
-	Models.instance(_detector, Models.build([
-		[Vector3.ZERO, Vector3(0.14, 0.04, 0.2), Color(0.22, 0.26, 0.22)],
-		[Vector3(0, -0.01, 0.15), Vector3(0.035, 0.035, 0.12), Color(0.12, 0.12, 0.12)],
-		[Vector3(0, 0.022, -0.03), Vector3(0.1, 0.006, 0.08), Color(0.12, 0.3, 0.16)],
-	], false), Models.view_material())
-	var shader := Shader.new()
-	shader.code = LED_SHADER
-	_led_mat = ShaderMaterial.new()
-	_led_mat.shader = shader
-	Models.instance(_detector, Models.build([[Vector3(0.045, 0.024, 0.06), Vector3(0.025, 0.012, 0.025), Color(0.25, 0.9, 0.35)]], false), _led_mat)
-
-
 # Puts everything you hold where it should be for this moment of the swing.
 func _animate_view(delta: float) -> void:
 	_hitstop -= delta
@@ -948,9 +910,6 @@ func _animate_view(delta: float) -> void:
 		var b := _block_blend
 		_shield.position = SHIELD_POS.lerp(SHIELD_UP, b) + bob * 0.6 + Vector3(0.0, 0.0, 0.02 * _recoil)
 		_shield.rotation = Vector3(0.1, 0.5, 0.0).lerp(Vector3(0.0, 0.05, 0.0), b)
-	_detector.visible = game.detector_on and kind in ["pickaxe", "leveler", "bomb"]
-	_led_glow = move_toward(_led_glow, 0.0, delta * 6.0)
-	_led_mat.set_shader_parameter("glow", _led_glow * 2.0)
 
 
 # The pickaxe part of the way between its poses: 0 at rest, 1 raised, -1 striking.

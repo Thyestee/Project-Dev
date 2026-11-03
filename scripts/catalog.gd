@@ -1,14 +1,12 @@
 extends RefCounted
-# Everything coins can buy at the workbench: plain gear, supplies, workshop upgrades for every
-# pickaxe, a bigger house, decorations and furniture.
+# Everything coins can buy at the workbench: bows and wooden shields, supplies, workshop
+# upgrades for every pickaxe, a bigger pack, a bigger house, decorations and furniture.
 
-# Common gear by tier (see Items.TIER_NAMES).
+# Plain gear the workbench sells, by tier (see Items.TIER_NAMES; 0 is not for sale). Metal gear
+# is made at the forge instead (see Goods.FORGE).
 const GEAR_PRICES := {
-	"pickaxe": [0, 120, 450, 1200],
-	"sword": [60, 220, 650, 1600],
-	"mace": [80, 260, 750, 1800],
 	"bow": [70, 240, 700, 1700],
-	"shield": [70, 240, 700, 1700],
+	"shield": [70, 0, 0, 0],
 }
 
 const SUPPLIES := [
@@ -37,7 +35,15 @@ const SIZES := [
 	{"name": "Broad head", "cost": 320, "radius": 4.9},
 	{"name": "Huge head", "cost": 800, "radius": 6.2},
 ]
-const WORKSHOP := {"grip": GRIPS, "size": SIZES}
+# Your pack's slots. Ore, gems and bars stack up to Goods.STACK in a slot; gear and treasure
+# take a slot each.
+const PACKS := [
+	{"name": "Satchel", "cost": 0, "slots": 8},
+	{"name": "Sturdy pack", "cost": 150, "slots": 12},
+	{"name": "Miner's pack", "cost": 450, "slots": 16},
+	{"name": "Expedition pack", "cost": 1200, "slots": 24},
+]
+const WORKSHOP := {"grip": GRIPS, "size": SIZES, "pack": PACKS}
 
 # Inside size in cubes (x by z). The north wall, with the door to the stairs, stays put.
 const HOUSE_TIERS := [
@@ -63,9 +69,9 @@ const FURNITURE := {
 	"bed": {"name": "Bed", "cost": 250, "size": Vector3i(10, 8, 18), "verb": "Sleep",
 		"text": "Sleep to heal and wake up well rested: +25% stamina for 10 minutes. You also come round here after a knockout."},
 	"chest": {"name": "Storage chest", "cost": 150, "size": Vector3i(10, 7, 6), "slots": 15, "verb": "Open",
-		"text": "Keeps 15 pieces of gear safe."},
+		"text": "15 slots for anything you want to keep: gear, ore, bars or treasure."},
 	"wardrobe": {"name": "Wardrobe", "cost": 450, "size": Vector3i(12, 18, 6), "slots": 30, "verb": "Open",
-		"text": "Keeps 30 pieces of gear safe."},
+		"text": "30 slots for anything you want to keep: gear, ore, bars or treasure."},
 	"anvil": {"name": "Anvil", "cost": 600, "size": Vector3i(8, 7, 5), "verb": "Use the anvil",
 		"text": "Reforge an affix on your gear, or break gear down into coins."},
 	"dummy": {"name": "Training dummy", "cost": 100, "size": Vector3i(8, 15, 6), "verb": "",

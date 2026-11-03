@@ -18,7 +18,7 @@ const TIER_NAMES := {
 }
 const TIER_COLORS := [Color(0.86, 0.5, 0.3), Color(0.64, 0.65, 0.68), Color(0.58, 0.72, 0.86), Color(0.5, 0.96, 1.0)]
 const WOOD_COLORS := [Color(0.66, 0.47, 0.28), Color(0.5, 0.3, 0.17), Color(0.34, 0.3, 0.3), Color(0.55, 0.88, 0.97)]
-const HARDNESS_TEXT := ["dirt, sand, clay and gravel", "stone and everything softer", "slate and everything softer", "every kind of rock"]
+const HARDNESS_TEXT := ["dirt, sand, clay, gravel, coal, copper and iron ore", "stone, silver ore, amethyst and everything softer", "slate, gold ore, rubies, diamonds and everything softer", "every kind of rock"]
 const RARITY_NAMES := Treasures.RARITY_NAMES
 const RARITY_COLORS := Treasures.RARITY_COLORS
 const RARITY_BUFF := [0.0, 0.1, 0.2, 0.3, 0.5]
@@ -55,12 +55,12 @@ const AFFIXES := {
 	"dig_size": {"text": "+%s%% dig size", "min": 8, "max": 20, "kinds": ["pickaxe"]},
 	"prospector": {"text": "+%s%% coins from treasure", "min": 10, "max": 30, "kinds": ["pickaxe"]},
 	"double": {"text": "%s%% chance of a double-strength blow", "min": 10, "max": 30, "kinds": ["pickaxe"]},
-	"sense": {"text": "+%s m metal detector range", "min": 2, "max": 6, "kinds": ["pickaxe"]},
+	"lucky": {"text": "+%s%% ore from every blow", "min": 10, "max": 30, "kinds": ["pickaxe"]},
 	"guard": {"text": "+%s%% block", "min": 4, "max": 10, "kinds": ["shield"]},
 	"thorns": {"text": "Blocked blows deal %s%% back to the attacker", "min": 20, "max": 50, "kinds": ["shield"]},
 }
 # These work from any equipped piece of gear; every other affix only works on its own item.
-const GLOBAL_AFFIXES := ["vitality", "regen", "swift", "sense"]
+const GLOBAL_AFFIXES := ["vitality", "regen", "swift"]
 
 const LEGENDS := {
 	"tunneler": {"kind": "pickaxe", "name": "Tunneler", "text": "Every swing also bores a tunnel 3 m straight ahead."},
@@ -150,8 +150,16 @@ static func sanitize(d) -> Dictionary:
 	var item := {"kind": str(d["kind"]), "tier": clampi(int(d.get("tier", 0)), 0, 3), "rarity": clampi(int(d.get("rarity", 0)), 0, 4),
 		"affixes": [], "legend": str(d.get("legend", "")), "rerolls": maxi(0, int(d.get("rerolls", 0)))}
 	for a in d.get("affixes", []):
-		if a is Dictionary and AFFIXES.has(str(a.get("id", ""))):
-			item["affixes"].append({"id": str(a["id"]), "value": int(a.get("value", 0))})
+		if not a is Dictionary:
+			continue
+		var id := str(a.get("id", ""))
+		var value := int(a.get("value", 0))
+		if id == "sense":
+			# The metal detector is gone: its range affix became ore luck.
+			id = "lucky"
+			value = 10 + (clampi(value, 2, 6) - 2) * 5
+		if AFFIXES.has(id):
+			item["affixes"].append({"id": id, "value": value})
 	if not LEGENDS.has(item["legend"]) or LEGENDS[item["legend"]]["kind"] != item["kind"]:
 		item["legend"] = ""
 	return item

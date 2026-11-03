@@ -14,13 +14,13 @@ const WORLD_SIZE := 384        # World.SX and World.SZ
 # Inside size in cubes, floor depth in metres below the house floor, the guards, and for each
 # loot chest the odds of it being uncommon, rare, epic or legendary.
 const SPECS := [
-	{"name": "Crypt", "size": Vector3i(44, 26, 40), "depth": [6.0, 12.0], "guards": ["skeleton", "skeleton", "spider"], "chests": [[70, 27, 3, 0]]},
-	{"name": "Crypt", "size": Vector3i(40, 26, 44), "depth": [7.0, 14.0], "guards": ["skeleton", "skeleton", "skeleton"], "chests": [[70, 27, 3, 0]]},
-	{"name": "Old hall", "size": Vector3i(60, 30, 52), "depth": [14.0, 22.0], "guards": ["skeleton", "skeleton", "archer", "spider"], "chests": [[35, 45, 17, 3]]},
-	{"name": "Old hall", "size": Vector3i(52, 30, 60), "depth": [15.0, 24.0], "guards": ["skeleton", "archer", "archer", "spider", "spider"], "chests": [[35, 45, 17, 3]]},
-	{"name": "Sanctum", "size": Vector3i(68, 34, 60), "depth": [23.0, 30.0], "guards": ["skeleton", "skeleton", "archer", "golem"], "chests": [[0, 45, 42, 13]]},
-	{"name": "Sanctum", "size": Vector3i(60, 34, 68), "depth": [25.0, 32.0], "guards": ["archer", "archer", "spider", "golem"], "chests": [[0, 45, 42, 13]]},
-	{"name": "Throne room", "size": Vector3i(88, 40, 80), "depth": [33.0, 37.0], "guards": ["warden", "skeleton", "skeleton", "archer", "archer"], "chests": [[0, 0, 40, 60], [0, 30, 55, 15]], "throne": true},
+	{"name": "Crypt", "size": Vector3i(44, 26, 40), "depth": [16.0, 20.0], "guards": ["skeleton", "skeleton", "spider"], "chests": [[70, 27, 3, 0]]},
+	{"name": "Crypt", "size": Vector3i(40, 26, 44), "depth": [17.0, 21.0], "guards": ["skeleton", "skeleton", "skeleton"], "chests": [[70, 27, 3, 0]]},
+	{"name": "Old hall", "size": Vector3i(60, 30, 52), "depth": [21.0, 26.0], "guards": ["skeleton", "skeleton", "archer", "spider"], "chests": [[35, 45, 17, 3]]},
+	{"name": "Old hall", "size": Vector3i(52, 30, 60), "depth": [22.0, 27.0], "guards": ["skeleton", "archer", "archer", "spider", "spider"], "chests": [[35, 45, 17, 3]]},
+	{"name": "Sanctum", "size": Vector3i(68, 34, 60), "depth": [27.0, 31.0], "guards": ["skeleton", "skeleton", "archer", "golem"], "chests": [[0, 45, 42, 13]]},
+	{"name": "Sanctum", "size": Vector3i(60, 34, 68), "depth": [28.0, 32.0], "guards": ["archer", "archer", "spider", "golem"], "chests": [[0, 45, 42, 13]]},
+	{"name": "Throne room", "size": Vector3i(88, 40, 80), "depth": [34.0, 37.0], "guards": ["warden", "skeleton", "skeleton", "archer", "archer"], "chests": [[0, 0, 40, 60], [0, 30, 55, 15]], "throne": true},
 ]
 
 const TORCH_COLOR := Color(1.0, 0.6, 0.28)

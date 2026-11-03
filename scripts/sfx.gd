@@ -1,6 +1,7 @@
 extends Node
 # Sound effects synthesized at startup, so the game needs no audio files. play() is for your
-# own sounds; play_at() places a sound out in the world.
+# own sounds; play_at() places a sound out in the world. The pickaxe has a sound for every kind
+# of surface it can land on ("pick_" + Blocks.SOUND).
 
 const RATE := 22050
 
@@ -11,8 +12,27 @@ var _next := 0
 
 
 func _ready() -> void:
-	_add("beep", _tone(1250.0, 0.07, 0.4, 25.0))
-	_add("dig", _noise(0.1, 0.5, 1100.0, 35.0))
+	# The pickaxe: dull in soft ground, crunchy in sand and gravel, sharp in rock, ringing off
+	# ore and metal, chiming off gems.
+	_add("pick_soft", _mix([_noise(0.16, 1.0, 380.0, 24.0), _tone(80.0, 0.16, 0.9, 26.0), _grains(0.12, 0.35, 900.0, 2200.0, 6, 11)], 0.75))
+	_add("pick_sand", _mix([_grains(0.2, 1.0, 2200.0, 6000.0, 40, 12), _noise(0.14, 0.55, 2800.0, 28.0), _tone(120.0, 0.08, 0.35, 45.0)], 0.6))
+	_add("pick_gravel", _mix([_grains(0.24, 1.0, 700.0, 3000.0, 26, 13), _noise(0.12, 0.5, 900.0, 30.0), _tone(100.0, 0.1, 0.5, 35.0)], 0.72))
+	_add("pick_coal", _mix([_grains(0.18, 0.9, 900.0, 3500.0, 16, 14), _noise(0.1, 0.8, 1300.0, 40.0), _tone(160.0, 0.1, 0.45, 40.0)], 0.7))
+	_add("pick_stone", _mix([_noise(0.12, 1.0, 2400.0, 42.0), _tone(310.0, 0.14, 0.7, 30.0), _tone(1250.0, 0.06, 0.3, 70.0), _grains(0.16, 0.35, 1200.0, 3500.0, 8, 15)], 0.75))
+	_add("pick_slate", _mix([_noise(0.1, 0.9, 3200.0, 55.0), _tone(520.0, 0.16, 0.6, 26.0), _tone(1580.0, 0.12, 0.35, 34.0)], 0.7))
+	_add("pick_hard", _mix([_noise(0.06, 0.8, 3000.0, 75.0), _ring([760.0, 1140.0, 1710.0], 0.4, 1.0, 15.0), _tone(190.0, 0.12, 0.5, 30.0)], 0.65))
+	_add("pick_ore", _mix([_noise(0.1, 0.9, 2200.0, 48.0), _tone(330.0, 0.12, 0.5, 30.0), _ring([1480.0, 2220.0], 0.45, 0.75, 10.0)], 0.7))
+	_add("pick_gem", _mix([_noise(0.05, 0.6, 4000.0, 80.0), _ring([2640.0, 3960.0, 5280.0], 0.55, 1.0, 8.0)], 0.55))
+	_add("pick_bedrock", _mix([_tone(105.0, 0.25, 1.0, 16.0), _noise(0.12, 0.7, 520.0, 28.0), _ring([880.0, 1320.0], 0.25, 0.35, 20.0)], 0.8))
+	_add("pick_treasure", _mix([_ring([1900.0, 2850.0, 3800.0], 0.5, 1.0, 8.0), _noise(0.04, 0.5, 3500.0, 90.0)], 0.5))
+	_add("pick_wood", _mix([_tone(230.0, 0.16, 1.0, 26.0), _tone(470.0, 0.12, 0.5, 34.0), _noise(0.08, 0.6, 1100.0, 45.0)], 0.7))
+	_add("pick_brick", _mix([_noise(0.12, 1.0, 1500.0, 38.0), _tone(200.0, 0.12, 0.7, 30.0), _grains(0.15, 0.4, 900.0, 2600.0, 9, 16)], 0.75))
+	_add("pick_metal", _mix([_ring([820.0, 1230.0, 1890.0], 0.6, 1.0, 7.0), _noise(0.05, 0.6, 3000.0, 60.0)], 0.5))
+	_add("pick_glass", _mix([_ring([2300.0, 3450.0], 0.3, 1.0, 13.0), _noise(0.03, 0.5, 5000.0, 100.0)], 0.45))
+	_add("pick_cloth", _mix([_noise(0.12, 1.0, 420.0, 30.0), _noise(0.08, 0.35, 2000.0, 50.0)], 0.5))
+	_add("pick_bone", _mix([_noise(0.09, 1.0, 2600.0, 45.0), _tone(620.0, 0.09, 0.6, 40.0)], 0.6))
+	# A soft ring when you dig close to buried treasure.
+	_add("ring", _ring([1320.0, 1985.0, 2650.0], 1.3, 0.55, 2.6))
 	_add("break", _noise(0.2, 0.65, 700.0, 16.0))
 	_add("place", _noise(0.09, 0.55, 450.0, 40.0))
 	_add("step", _noise(0.07, 0.3, 350.0, 55.0))
@@ -139,6 +159,39 @@ static func _slide_samples(from: float, to: float, length: float) -> PackedFloat
 		phase += TAU * lerpf(from, to, t / length) / RATE
 		samples[i] = (sin(phase) + 0.4 * sin(phase * 2.0)) * sin(PI * t / length)
 	return samples
+
+
+# Partials that ring on and fade, the higher ones sooner: metal, crystal, glass.
+static func _ring(freqs: Array, length: float, volume: float, decay: float) -> AudioStreamWAV:
+	var samples := PackedFloat32Array()
+	samples.resize(int(length * RATE))
+	for k in freqs.size():
+		var freq: float = freqs[k]
+		var fade := decay * (1.0 + 0.5 * k)
+		var amp := 1.0 / (1.0 + 0.6 * k)
+		for i in samples.size():
+			var t := float(i) / RATE
+			samples[i] += sin(TAU * freq * t) * amp * exp(-t * fade) * minf(1.0, t * 800.0)
+	return _wav(samples, volume)
+
+
+# Lots of tiny clicks close together, most of them early: sand and gravel shifting, coal
+# crumbling. `lo` and `hi` bound how bright each click is.
+static func _grains(length: float, volume: float, lo: float, hi: float, count: int, seed_value: int) -> AudioStreamWAV:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value
+	var samples := PackedFloat32Array()
+	samples.resize(int(length * RATE))
+	for n in count:
+		var start := int(rng.randf() * rng.randf() * length * 0.85 * RATE)
+		var alpha := 1.0 - exp(-TAU * rng.randf_range(lo, hi) / RATE)
+		var amp := rng.randf_range(0.25, 1.0) * (1.0 - float(start) / samples.size())
+		var v := 0.0
+		for i in range(start, mini(start + int(0.025 * RATE), samples.size())):
+			var t := float(i - start) / RATE
+			v += (rng.randf_range(-1.0, 1.0) - v) * alpha
+			samples[i] += v * amp * exp(-t * 140.0)
+	return _wav(samples, volume)
 
 
 # Lots of little clicks and thuds: bones and stones falling apart.
