@@ -53,6 +53,7 @@ var _cave_done := {}            # cave region -> true once its caves are in _cav
 var _caves := {}                # chunk key -> PackedFloat32Array of hollows: centre and radii, in cells
 var _cave_checked := Vector3i(1 << 30, 0, 0)
 var _room_layouts := {}         # room region -> its room, or {}
+var _check_layouts := {}        # checkpoint region -> its checkpoint, or {}
 var _canvases := {}             # room id -> its blocks (see Rooms.Canvas)
 var _canvas_order: Array[String] = []
 var _runs := []                 # block -> {length: PackedByteArray of that block}
@@ -597,8 +598,43 @@ func room_layout(r: Vector3i) -> Dictionary:
 	return _room_layouts[k]
 
 
-# Rooms whose shell comes into the box lo..hi (cells).
+# Rooms whose shell comes into the box lo..hi (cells), checkpoints included.
 func rooms_in_box(lo: Vector3i, hi: Vector3i) -> Array:
+	var out := _regular_rooms_in_box(lo, hi)
+	var clo := Rooms.checkpoint_region_of(lo)
+	var chi := Rooms.checkpoint_region_of(hi)
+	for rz in range(clo.z, chi.z + 1):
+		for rx in range(clo.x, chi.x + 1):
+			for ry in range(clo.y, chi.y + 1):
+				var room := checkpoint_layout(Vector3i(rx, ry, rz))
+				if room.is_empty():
+					continue
+				var slo: Vector3i = room["shell_lo"]
+				var shi: Vector3i = room["shell_hi"]
+				if shi.x >= lo.x and slo.x <= hi.x and shi.y >= lo.y and slo.y <= hi.y and shi.z >= lo.z and slo.z <= hi.z:
+					out.append(room)
+	return out
+
+
+# The checkpoint of a checkpoint region, or {}: somewhere in it clear of the other rooms.
+func checkpoint_layout(r: Vector3i) -> Dictionary:
+	var k := ckey(r.x, r.y, r.z)
+	if _check_layouts.has(k):
+		return _check_layouts[k]
+	if _check_layouts.size() > 20000:
+		_check_layouts.clear()
+	var room := {}
+	if Rooms.has_checkpoint(world_seed, r):
+		for attempt in 8:
+			var spot := Rooms.checkpoint_candidate(world_seed, r, attempt)
+			if not spot.is_empty() and _regular_rooms_in_box(spot["shell_lo"] - Vector3i(6, 6, 6), spot["shell_hi"] + Vector3i(6, 6, 6)).is_empty():
+				room = spot
+				break
+	_check_layouts[k] = room
+	return room
+
+
+func _regular_rooms_in_box(lo: Vector3i, hi: Vector3i) -> Array:
 	var out := []
 	var rlo := Rooms.region_of(lo)
 	var rhi := Rooms.region_of(hi)

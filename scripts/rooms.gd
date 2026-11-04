@@ -20,7 +20,12 @@ const UNTOUCHED := 255
 const PORCH := 8                           # how far the alcove in front of a trial's door reaches out
 const TORCH_COLOR := Color(1.0, 0.6, 0.28)
 const TRIAL_COLOR := Color(0.45, 0.8, 1.0)
-const TYPE_NAMES := {"fight": "Guard room", "treasure": "Treasure room", "trial": "Trial"}
+const WARD_COLOR := Color(0.35, 1.0, 0.82)
+const TYPE_NAMES := {"fight": "Guard room", "treasure": "Treasure room", "trial": "Trial", "checkpoint": "Checkpoint"}
+# Checkpoints have a grid of their own, coarser than the other rooms': most of its regions hold one,
+# wherever there's space between the other rooms.
+const CHECK_REGION := Vector3i(256, 160, 256)
+const CHECK_CHANCE := 0.85
 
 # How fast you run and jump (see Player): a trial's gaps are never wider than you can clear.
 const RUN := 6.4
@@ -73,6 +78,10 @@ class Canvas:
 
 static func region_of(c: Vector3i) -> Vector3i:
 	return Vector3i(floori(c.x / float(REGION.x)), floori(c.y / float(REGION.y)), floori(c.z / float(REGION.z)))
+
+
+static func checkpoint_region_of(c: Vector3i) -> Vector3i:
+	return Vector3i(floori(c.x / float(CHECK_REGION.x)), floori(c.y / float(CHECK_REGION.y)), floori(c.z / float(CHECK_REGION.z)))
 
 
 static func _rng(world_seed: int, r: Vector3i, salt: int) -> RandomNumberGenerator:
@@ -145,6 +154,48 @@ static func layout(world_seed: int, r: Vector3i) -> Dictionary:
 		"axis": axis, "flip": flip, "center": (Vector3(lo) + Vector3(size) * 0.5) * VOXEL}
 
 
+# Whether a checkpoint region holds a checkpoint at all.
+static func has_checkpoint(world_seed: int, r: Vector3i) -> bool:
+	return _rng(world_seed, r, 30).randf() < CHECK_CHANCE
+
+
+# One place a checkpoint could go in its region (each attempt somewhere else), or {} if the
+# region is too shallow, too deep or by your house. The world checks it's clear of other rooms.
+static func checkpoint_candidate(world_seed: int, r: Vector3i, attempt: int) -> Dictionary:
+	var rlo := r * CHECK_REGION
+	if rlo.y > FLOOR - int(MIN_DEPTH / VOXEL) or rlo.y < BOTTOM + 120:
+		return {}
+	var rng := _rng(world_seed, r, 31 + attempt * 7)
+	var axis := 0 if rng.randf() < 0.5 else 2
+	var flip := rng.randf() < 0.5
+	var along := rng.randi_range(32, 38)
+	var across := rng.randi_range(30, 36)
+	var size := Vector3i(along, 26, across) if axis == 0 else Vector3i(across, 26, along)
+	var reach := Vector3i(3, 3, 3)
+	var porch := Vector3i.ZERO
+	porch[axis] = PORCH
+	var space := CHECK_REGION - size - reach * 2 - porch - Vector3i(MARGIN, MARGIN, MARGIN) * 2
+	var lo := rlo + Vector3i(MARGIN, MARGIN, MARGIN) + reach + Vector3i(rng.randi_range(0, space.x), rng.randi_range(0, space.y), rng.randi_range(0, space.z))
+	if not flip:
+		lo[axis] += PORCH
+	var hi := lo + size - Vector3i.ONE
+	var shell_lo := lo - reach
+	var shell_hi := hi + reach
+	if flip:
+		shell_hi[axis] += PORCH
+	else:
+		shell_lo[axis] -= PORCH
+	if shell_hi.y > FLOOR - int(MIN_DEPTH / VOXEL):
+		return {}
+	if shell_hi.x >= House.EXCLUDE_LO.x - 16 and shell_lo.x <= House.EXCLUDE_HI.x + 16 and shell_hi.y >= House.EXCLUDE_LO.y - 16 \
+			and shell_hi.z >= House.EXCLUDE_LO.z - 16 and shell_lo.z <= House.EXCLUDE_HI.z + 16:
+		return {}
+	var depth := (FLOOR - lo.y) * VOXEL
+	return {"id": "c%d_%d_%d" % [r.x, r.y, r.z], "type": "checkpoint", "name": TYPE_NAMES["checkpoint"], "lo": lo, "hi": hi, "shell_lo": shell_lo, "shell_hi": shell_hi,
+		"depth": depth, "level": Blocks.level(depth), "seed": hash([world_seed, r.x, r.y, r.z, 32]), "axis": axis, "flip": flip,
+		"center": (Vector3(lo) + Vector3(size) * 0.5) * VOXEL}
+
+
 # --- Building one -------------------------------------------------------------------------------
 
 # The room's blocks, and everything about it that isn't blocks: its chests, guards, lights and
@@ -164,6 +215,8 @@ static func build(room: Dictionary) -> Canvas:
 			_build_treasure(c, room, rng)
 		"trial":
 			_build_trial(c, room, rng)
+		"checkpoint":
+			_build_checkpoint(c, room)
 	c.finish()
 	return c
 
@@ -567,6 +620,53 @@ static func _platform(c: Canvas, room: Dictionary, u0: int, h: int, v0: int, siz
 	for du: int in [0, size - 1]:
 		for dv: int in [0, size - 1]:
 			_tfill(c, room, u0 + du, h - 1, v0 + dv, u0 + du, h - 1, v0 + dv, Blocks.TRIAL_GLOW)
+
+
+# --- Checkpoints ----------------------------------------------------------------------------------
+
+# A checkpoint: a small chamber of ward stone, three cubes thick, that nothing digs or blasts, with
+# a single door and an alcove in front of it. In the middle stands the waystone: touch it once
+# to unlock it, and from then on it takes you home, and the rope lift at home brings you back.
+# Built in the same frame as a trial (see _cell).
+static func _build_checkpoint(c: Canvas, room: Dictionary) -> void:
+	var lo: Vector3i = room["lo"]
+	var hi: Vector3i = room["hi"]
+	var axis: int = room["axis"]
+	var along := (hi - lo)[axis] + 1
+	var across := (hi - lo)[2 - axis] + 1
+	var height := hi.y - lo.y + 1
+	c.fill(lo - Vector3i(3, 3, 3), hi + Vector3i(3, 3, 3), Blocks.WARD_STONE)
+	c.fill(lo, hi, Blocks.AIR)
+	# A band of runes round the walls.
+	_tfill(c, room, 0, height - 7, -1, along - 1, height - 7, -1, Blocks.WARD_GLOW)
+	_tfill(c, room, 0, height - 7, across, along - 1, height - 7, across, Blocks.WARD_GLOW)
+	_tfill(c, room, along, height - 7, 0, along, height - 7, across - 1, Blocks.WARD_GLOW)
+	# The door at floor level, and the alcove in front of it with a stone threshold.
+	var mid := across / 2
+	_tfill(c, room, -3, 0, mid - 4, -1, 15, mid + 3, Blocks.AIR)
+	_tfill(c, room, -3 - PORCH, -1, mid - 6, -4, -1, mid + 5, Blocks.WARD_STONE)
+	_tfill(c, room, -3 - PORCH, 0, mid - 6, -4, 17, mid + 5, Blocks.AIR)
+	_tfill(c, room, -4, 0, mid - 5, -4, 16, mid - 5, Blocks.WARD_GLOW)
+	_tfill(c, room, -4, 0, mid + 4, -4, 16, mid + 4, Blocks.WARD_GLOW)
+	_tfill(c, room, -4, 16, mid - 5, -4, 16, mid + 4, Blocks.WARD_GLOW)
+	room["door"] = (Vector3(_cell(room, -3 - PORCH / 2, 0, mid)) + Vector3(0.5, 0.0, 0.5)) * VOXEL
+	# The waystone on its plinth, with glowing runes round its foot and a light over it.
+	var su := along / 2 + 2
+	_tfill(c, room, su - 4, 0, mid - 4, su + 3, 1, mid + 3, Blocks.WARD_STONE)
+	_tfill(c, room, su - 2, 2, mid - 2, su + 1, 15, mid + 1, Blocks.WAYSTONE)
+	_tfill(c, room, su - 2, 16, mid - 2, su + 1, 16, mid + 1, Blocks.WARD_GLOW)
+	for k in 4:
+		var du: int = [-4, 3, -4, 3][k]
+		var dv: int = [-4, -4, 3, 3][k]
+		_tfill(c, room, su + du, 2, mid + dv, su + du, 2, mid + dv, Blocks.WARD_GLOW)
+	var top := _cell(room, su, 17, mid)
+	room["lights"].append({"pos": (Vector3(top) + Vector3(0.0, 0.5, 0.0)) * VOXEL, "color": WARD_COLOR * 0.7, "range": 7.0,
+		"min_y": (lo.y - 1) * VOXEL, "flicker": false, "room": room["id"]})
+	room["stone"] = (Vector3(_cell(room, su, 8, mid))) * VOXEL
+	# Where you arrive when you come here from home: between the door and the stone, facing it.
+	var at := (Vector3(_cell(room, su - 8, 0, mid)) + Vector3(0.5, 0.0, 0.5)) * VOXEL
+	var to: Vector3 = room["stone"] - at
+	room["arrive"] = [at.x, at.y, at.z, atan2(-to.x, -to.z)]
 
 
 # --- Finding them --------------------------------------------------------------------------------

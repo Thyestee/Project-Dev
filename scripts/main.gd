@@ -1,8 +1,9 @@
 extends Node3D
 # Deep Finds: take the stairs down from your house and dig. The ground goes on as far as you
 # like in every direction and 10 km down, and every wall hides ore and gems, better the deeper
-# you go. Carry what you find home to sell or smelt; break into the hidden rooms all through it
-# for gear, treasure and scrolls; and improve your gear at the forge to dig deeper still.
+# you go. Carry what you find home to sell or smelt, climbing back up or through the checkpoints
+# you unlock on the way; break into the hidden rooms all through it for gear, treasure and
+# scrolls; and improve your gear at the forge to dig deeper still.
 
 const Blocks := preload("res://scripts/blocks.gd")
 const Treasures := preload("res://scripts/treasures.gd")
@@ -23,7 +24,7 @@ const Models := preload("res://scripts/models.gd")
 
 const SAVE_PATH := "user://deep_finds_save.json"
 const WORLD_PATH := "user://deep_finds_world.dat"
-const SAVE_VERSION := 6
+const SAVE_VERSION := 7
 const AUTOSAVE_SECONDS := 30.0
 const RESTED_SECONDS := 600.0
 const LEVEL_CUT := 12
@@ -64,7 +65,7 @@ var room_state := {}          # room id -> {"opened", "dead": [guard numbers], "
 var explosive_index := 0
 var rested := 0.0
 var tracked := {}             # the hidden room your compass points at: {"id", "name", "center", "top"}
-var return_point := []        # where you were when you last went home: [x, y, z, yaw, pitch], or []
+var checkpoints := {}         # room id -> {"name", "pos", "yaw", "depth"}: the checkpoints you've unlocked
 var deepest := 0.0            # the deepest you've ever been, in metres
 var _rng := RandomNumberGenerator.new()
 var _has_save := false
@@ -80,7 +81,7 @@ var _gas: Array = []          # clouds of poison from trapped chests: {"pos", "t
 var _spike_mesh: Mesh
 var _in_room := ""            # the hidden room you're standing in
 var _fell := false            # whether you're down on a trial's floor
-var _welcome := ""            # said when you start playing: what became of a 0.5 save
+var _welcome := ""            # said when you start playing: what's new since an older save
 
 
 func _ready() -> void:
@@ -128,6 +129,8 @@ func _start_world() -> void:
 		if int(save.get("refund", -1)) >= 0:
 			_welcome = "A whole new world to dig, as deep as 10 km! Your gear moved to the new materials%s." % \
 				(", and your bows, arrows and pickaxe upgrades became %s coins" % Hud.thousands(int(save["refund"])) if int(save["refund"]) > 0 else "")
+		elif save.get("from_06", false):
+			_welcome = "New: there's no going home from anywhere now. Unlock checkpoints deep down to get home, and hold Alt to climb."
 	var found_ids := {}
 	for id in save.get("found_ids", []):
 		found_ids[str(id)] = true
@@ -300,48 +303,66 @@ func open_menu(menu: String, data = null) -> void:
 	menus.open(menu, data)
 
 
-# Home in an instant. The rope lift by your door takes you back down to where you were.
-func return_home() -> void:
-	if world.depth_at(player.position) > 3.0:
-		return_point = [player.position.x, player.position.y, player.position.z, player.yaw, player.pitch]
-	save_game()
-	_go(world.spawn_point(), Vector2.ZERO, "play")
+# --- Checkpoints ---------------------------------------------------------------------------------
+
+# E on a checkpoint's waystone: the first time, it's unlocked; from then on it takes you home, or
+# on to another checkpoint you've unlocked.
+func use_waystone(id: String) -> void:
+	var room: Dictionary = world.rooms.get(id, {})
+	if room.is_empty():
+		return
+	if not checkpoints.has(id):
+		var at: Array = room["arrive"]
+		checkpoints[id] = {"name": _checkpoint_name(room), "pos": [at[0], at[1], at[2]], "yaw": at[3], "depth": float(room["depth"])}
+		sfx.play("treasure", 0.7)
+		effects.burst(room["stone"] + Vector3(0.0, 1.0, 0.0), Color(0.35, 1.0, 0.82), 30, 2.5, 0.05, Vector3.UP, 80.0, -1.0, 1.2, true)
+		toast("Checkpoint unlocked! Use it to go home, and the rope lift by your door brings you back here.", Color(0.35, 1.0, 0.82))
+		save_game()
+	open_menu("travel", {"here": id})
 
 
+# The rope lift by your door: down to any checkpoint you've unlocked.
 func ride_lift() -> void:
-	if return_point.size() != 5:
-		toast("The rope lift takes you back down to wherever you were when you last went home (from the pause menu).")
+	if checkpoints.is_empty():
+		toast("The rope lift takes you down to the checkpoints you've unlocked. You haven't found one yet: they're deep down, behind walls nothing digs through.")
 		return
 	sfx.play("place", 0.6)
-	_go(Vector3(return_point[0], return_point[1], return_point[2]), Vector2(return_point[3], return_point[4]), "play")
+	open_menu("travel", {"here": "home"})
 
 
-func return_depth() -> float:
-	return world.depth_at(Vector3(return_point[0], return_point[1], return_point[2])) if return_point.size() == 5 else 0.0
+# Off to a checkpoint you've unlocked, or home ("home").
+func travel(id: String) -> void:
+	save_game()
+	if id == "home":
+		_go(world.spawn_point(), Vector2.ZERO, "play")
+		return
+	var cp: Dictionary = checkpoints.get(id, {})
+	if cp.is_empty():
+		return
+	var p: Array = cp["pos"]
+	_go(Vector3(p[0], p[1], p[2]), Vector2(float(cp["yaw"]), -0.1), "play")
 
 
-func ask_new_world() -> void:
+# "Checkpoint at 230 m": how they're told apart.
+func _checkpoint_name(room: Dictionary) -> String:
+	return "Checkpoint at %s m" % Hud.thousands(roundi(float(room["depth"])))
+
+
+func ask_new_game() -> void:
 	state = "confirm"
-	menus.show_new_world_confirm()
+	menus.show_new_game_confirm()
 
 
-func cancel_new_world() -> void:
+func cancel_new_game() -> void:
 	if menus.confirm_from == "paused":
 		pause()
 	else:
 		show_title()
 
 
-# A fresh world with new ground, ore, treasure and hidden rooms. Everything you own carries over.
-func new_world() -> void:
-	var data := _save_data()
-	data["seed"] = randi()
-	data["rooms"] = {}
-	data["found_ids"] = []
-	data["tracked"] = {}
-	data["return"] = []
-	data.erase("player")
-	_write_save(data)
+# Starts over from nothing: a new world, and no coins, gear, house, scrolls or journal.
+func new_game() -> void:
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE_PATH))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(WORLD_PATH))
 	state = "starting"
 	get_tree().reload_current_scene()
@@ -450,10 +471,16 @@ func show_target() -> void:
 	elif House.is_forge(c):
 		hud.set_target("Forge  ·  E to smelt ore and improve your gear", Hud.GOLD)
 	elif House.is_lift(c):
-		if return_point.size() == 5:
-			hud.set_target("Rope lift  ·  E to go back down (%s m)" % Hud.thousands(roundi(return_depth())), Hud.GOLD)
+		if checkpoints.is_empty():
+			hud.set_target("Rope lift  ·  it takes you down to the checkpoints you unlock", Hud.GOLD)
 		else:
-			hud.set_target("Rope lift  ·  it takes you back to where you were when you last went home", Hud.GOLD)
+			hud.set_target("Rope lift  ·  E to go down to a checkpoint", Hud.GOLD)
+	elif b == Blocks.WAYSTONE:
+		var id: String = world.room_containing(World.center_of(c))
+		if checkpoints.has(id):
+			hud.set_target("Waystone  ·  E to go home, or to another checkpoint", Color(0.35, 1.0, 0.82))
+		else:
+			hud.set_target("Waystone  ·  E to unlock this checkpoint", Color(0.35, 1.0, 0.82))
 	elif not rec.is_empty():
 		var def: Dictionary = Catalog.FURNITURE[rec["type"]]
 		var verb: String = def["verb"]
@@ -475,6 +502,8 @@ func show_target() -> void:
 		hud.set_target("A buried chest  ·  E to dig it up", Hud.GOLD)
 	elif Blocks.is_trial(b):
 		hud.set_target("Trial stone  ·  nothing digs through it. The way in is somewhere along it.", Color(0.6, 0.85, 1.0))
+	elif Blocks.is_ward(b):
+		hud.set_target("Ward stone  ·  a checkpoint: nothing digs through it. The way in is somewhere along it.", Color(0.35, 1.0, 0.82))
 	elif Blocks.TIER[b] > Items.hardness(equipped["pickaxe"]):
 		hud.set_target("%s  ·  needs %s pickaxe" % [Blocks.NAMES[b], _article(Items.MATERIALS[Blocks.TIER[b]].to_lower())], Color(1.0, 0.55, 0.45))
 	elif Blocks.is_ore(b):
@@ -499,6 +528,10 @@ func interact() -> void:
 		open_menu("forge")
 	elif House.is_lift(c):
 		ride_lift()
+	elif t["block"] == Blocks.WAYSTONE:
+		var id: String = world.room_containing(World.center_of(c))
+		if id != "":
+			use_waystone(id)
 	elif not rec.is_empty():
 		match rec["type"]:
 			"bed":
@@ -559,6 +592,8 @@ func _can_dig(target: Dictionary) -> bool:
 			toast("Bedrock. Nothing digs through this." + (" This is the bottom of the world." if world.depth_at(point) > 9000.0 else ""))
 		elif Blocks.is_trial(b):
 			note("Trial stone: nothing digs through it. Follow the wall to find the way in.", Color(0.6, 0.85, 1.0), 8.0)
+		elif Blocks.is_ward(b):
+			note("Ward stone: a checkpoint, and nothing digs through it. Follow the wall to find the way in.", Color(0.35, 1.0, 0.82), 8.0)
 		elif b == Blocks.BRICK:
 			toast("These bricks hold the stairs up. Better leave them be.")
 		elif Blocks.is_loot_chest(b):
@@ -698,7 +733,7 @@ func on_flatten(target: Dictionary) -> void:
 	var b: int = target["block"]
 	var cell: Vector3i = target["cell"]
 	var point: Vector3 = target["point"]
-	if Blocks.is_trial(b) or (b > Blocks.BEDROCK and Blocks.TIER[b] < 0):
+	if Blocks.is_smooth(b) or (b > Blocks.BEDROCK and Blocks.TIER[b] < 0):
 		hit_sound(b)
 		effects.sparks(point, target["normal"])
 		player.impact(0.8, true)
@@ -897,8 +932,6 @@ func guards_left(id: String) -> int:
 
 
 func on_player_died() -> void:
-	if world.depth_at(player.position) > 3.0:
-		return_point = [player.position.x, player.position.y, player.position.z, player.yaw, player.pitch]
 	state = "dead"
 	player.set_active(false)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -973,7 +1006,9 @@ func _update_rooms() -> void:
 			var room: Dictionary = world.rooms[id]
 			if room["type"] == "trial" and not st["seen"]:
 				toast("A trial! Jump from pillar to pillar to the reward on the far ledge.", Color(0.6, 0.85, 1.0))
-			if not st["opened"] and room["type"] == "trial":
+			elif room["type"] == "checkpoint" and not checkpoints.has(id):
+				toast("A checkpoint! Touch the waystone (E) to unlock it: then it takes you home.", Color(0.35, 1.0, 0.82))
+			if not st["opened"] and room["type"] in ["trial", "checkpoint"]:
 				st["opened"] = true
 			st["seen"] = true
 	if _in_room != "":
@@ -1622,6 +1657,7 @@ func _setup_input() -> void:
 		"jump": [KEY_SPACE],
 		"sprint": [KEY_SHIFT],
 		"crouch": [KEY_CTRL, KEY_C],
+		"climb": [KEY_ALT],
 		"journal": [KEY_TAB, KEY_J],
 		"inventory": [KEY_I],
 		"interact": [KEY_E],
@@ -1675,7 +1711,7 @@ func _save_data() -> Dictionary:
 		"storage": storage,
 		"rooms": room_state,
 		"player": [p.x, p.y, p.z, player.yaw, player.pitch],
-		"return": return_point,
+		"checkpoints": checkpoints,
 		"deepest": deepest,
 		"health": player.health,
 		"rested": rested,
@@ -1758,9 +1794,14 @@ func _load_progress(save: Dictionary) -> void:
 	rested = maxf(0.0, float(save.get("rested", 0.0)))
 	deepest = maxf(0.0, float(save.get("deepest", 0.0)))
 	explosive_index = clampi(int(save.get("explosive", 0)), 0, Catalog.EXPLOSIVE_ORDER.size() - 1)
-	var back: Array = save.get("return", [])
-	if back.size() == 5:
-		return_point = [float(back[0]), float(back[1]), float(back[2]), float(back[3]), float(back[4])]
+	var saved_checkpoints = save.get("checkpoints", {})
+	if saved_checkpoints is Dictionary:
+		for id in saved_checkpoints:
+			var cp = saved_checkpoints[id]
+			if cp is Dictionary and (cp.get("pos", []) as Array).size() == 3:
+				var p: Array = cp["pos"]
+				checkpoints[str(id)] = {"name": str(cp.get("name", "Checkpoint")), "pos": [float(p[0]), float(p[1]), float(p[2])],
+					"yaw": float(cp.get("yaw", 0.0)), "depth": float(cp.get("depth", 0.0))}
 	var t = save.get("tracked", {})
 	if t is Dictionary and t.has("id") and (t.get("center", []) as Array).size() == 3:
 		var c: Array = t["center"]
@@ -1790,6 +1831,14 @@ func _read_save() -> Dictionary:
 	var data: Dictionary = parsed
 	match int(data.get("version", 0)):
 		SAVE_VERSION:
+			return data
+		6:
+			# 0.6: the same world carries on, with checkpoints added to it. Its way home from
+			# anywhere is gone, and with it the rope back down to where you went home from.
+			data["version"] = SAVE_VERSION
+			data.erase("return")
+			data["checkpoints"] = {}
+			data["from_06"] = true
 			return data
 		3, 4, 5:
 			return _from_old(data)
@@ -1835,7 +1884,7 @@ func _from_old(data: Dictionary) -> Dictionary:
 	data["rooms"] = {}
 	data["found_ids"] = []
 	data["tracked"] = {}
-	data["return"] = []
+	data["checkpoints"] = {}
 	data.erase("player")
 	data.erase("vaults")
 	data.erase("edits")

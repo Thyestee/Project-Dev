@@ -236,8 +236,8 @@ static func _box(w, o: Vector3i, lo: Vector3i, hi: Vector3i, b: int) -> void:
 	w.fill(o + lo, o + hi, b)
 
 
-# A coil of rope on a winch beside the door: it lowers you straight back to wherever you were
-# when you last went home.
+# A coil of rope on a winch beside the door: it lowers you down to any checkpoint you've
+# unlocked.
 static func _lift(w) -> void:
 	var o := LIFT_LO
 	_box(w, o, Vector3i(0, 15, 0), Vector3i(1, 16, 1), Blocks.BEAM)

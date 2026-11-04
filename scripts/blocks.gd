@@ -89,6 +89,9 @@ const TRIAL_GLOW := 85    # the glowing marks on a trial's platforms
 const TRAP_PLATE := 86    # a pressure plate in a treasure room's floor
 const DART_SLIT := 87     # where a dart trap's darts fly out
 const ROPE := 88          # the rope lift by your door
+const WARD_STONE := 89    # a checkpoint's walls, floor and ceiling: nothing digs through them
+const WARD_GLOW := 90     # the glowing runes in a checkpoint
+const WAYSTONE := 91      # the stone in the middle of a checkpoint that takes you home
 
 # name, colour, pick tier that can dig it (-1: nothing can; see Items.MATERIALS), seconds per
 # swing, glow, how much the shade varies from cube to cube (or triangle to triangle), and the
@@ -183,6 +186,9 @@ const DEFS := [
 	["Floor tile", Color(0.41, 0.38, 0.33), 1, 0.7, 0.0, 0.04, "brick"],
 	["Dart slit", Color(0.12, 0.11, 0.1), 1, 0.7, 0.0, 0.05, "brick"],
 	["Rope", Color(0.72, 0.6, 0.38), -1, 0.0, 0.0, 0.12, "cloth"],
+	["Ward stone", Color(0.62, 0.57, 0.48), -1, 0.0, 0.0, 0.08, "bedrock"],
+	["Ward stone", Color(0.35, 0.95, 0.8), -1, 0.0, 0.85, 0.03, "glass"],
+	["Waystone", Color(0.3, 0.55, 0.6), -1, 0.0, 0.55, 0.05, "gem"],
 ]
 
 # The flecks of metal or crystal that glint in each ore and gem.
@@ -251,6 +257,15 @@ static func is_vault(b: int) -> bool:
 
 static func is_trial(b: int) -> bool:
 	return b >= TRIAL_STONE and b <= TRIAL_GLOW
+
+
+static func is_ward(b: int) -> bool:
+	return b >= WARD_STONE and b <= WAYSTONE
+
+
+# Stone too smooth to climb: the walls of trials and checkpoints.
+static func is_smooth(b: int) -> bool:
+	return is_trial(b) or is_ward(b)
 
 
 static func is_loot_chest(b: int) -> bool:

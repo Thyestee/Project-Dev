@@ -270,6 +270,27 @@ func headroom(lo: Vector3, hi: Vector3, limit: float) -> float:
 	return limit
 
 
+# What a box would hold on to, climbing: 0 nothing solid, 1 something you can climb, 2 only stone
+# too smooth to climb (the walls of trials and checkpoints).
+func grip(lo: Vector3, hi: Vector3) -> int:
+	var x0 := floori(lo.x / VOXEL)
+	var y0 := floori(lo.y / VOXEL)
+	var z0 := floori(lo.z / VOXEL)
+	var x1 := floori(hi.x / VOXEL - 0.0001)
+	var y1 := floori(hi.y / VOXEL - 0.0001)
+	var z1 := floori(hi.z / VOXEL - 0.0001)
+	var smooth := false
+	for z in range(z0, z1 + 1):
+		for x in range(x0, x1 + 1):
+			for y in range(y0, y1 + 1):
+				var b := block(x, y, z)
+				if b != Blocks.AIR:
+					if not Blocks.is_smooth(b):
+						return 1
+					smooth = true
+	return 2 if smooth else 0
+
+
 # The buried treasure a cell belongs to, or "".
 func treasure_at(c: Vector3i) -> String:
 	for id: String in treasures:
@@ -1005,7 +1026,7 @@ func _register_room(room: Dictionary) -> void:
 		return
 	gen.canvas(room)
 	rooms[id] = room
-	if room["type"] == "trial":
+	if room["type"] in ["trial", "checkpoint"]:
 		lit_rooms[id] = true
 	if on_room_loaded.is_valid():
 		on_room_loaded.call(room)
@@ -1086,7 +1107,7 @@ func _plan() -> void:
 		var d: Vector3 = (room["center"] - here).abs()
 		if d.x > reach.x + 8.0 or d.y > reach.y + 6.0 or d.z > reach.z + 8.0:
 			rooms.erase(id)
-			if room["type"] == "trial":
+			if room["type"] in ["trial", "checkpoint"]:
 				lit_rooms.erase(id)
 			if on_room_unloaded.is_valid():
 				on_room_unloaded.call(room)

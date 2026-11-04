@@ -1,6 +1,7 @@
 extends CanvasLayer
 # The full-screen menus: loading, title, pause, the journal, the workbench, the forge, your pack,
-# chests, the anvil, the map table, and coming round after a knockout.
+# chests, the anvil, the map table, the checkpoints you can travel to, and coming round after a
+# knockout.
 
 const Treasures := preload("res://scripts/treasures.gd")
 const Items := preload("res://scripts/items.gd")
@@ -17,7 +18,7 @@ const BAD := Color(0.8, 0.5, 0.45)
 const SHOP_TABS := [["sell", "Sell"], ["gear", "Gear"], ["supplies", "Supplies"], ["workshop", "Workshop"], ["house", "House"], ["furniture", "Furniture"]]
 const COMPASS := ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"]
 const CONTROLS := [
-	"WASD move  ·  Space jump  ·  Shift sprint  ·  Ctrl crouch  ·  Mouse look",
+	"WASD move  ·  Space jump  ·  Shift sprint  ·  Ctrl crouch  ·  hold Alt against a wall to climb  ·  Mouse look",
 	"1-4 or wheel: pickaxe, sword, mace, explosives  ·  R changes the explosive",
 	"Pickaxe: left click digs, right click flattens  ·  Sword or mace: right click raises your shield",
 	"E use or pick up  ·  G move furniture  ·  I pack  ·  Tab journal  ·  Esc pause",
@@ -189,13 +190,13 @@ func show_loading(progress: float) -> void:
 func show_title(has_save: bool) -> void:
 	var lines: Array = ["Under your house the ground goes on for ever, and 10 km down. It's full of ore and gems, better the deeper you dig.",
 		"Carry them home to sell at the workbench, or smelt them at the forge to improve your gear.",
-		"Hidden rooms are everywhere down there: guards, chests and traps, and trials to test your jumping.", ""]
+		"Hidden rooms are everywhere down there: guards, chests and traps, trials to test your jumping, and checkpoints to take you home.", ""]
 	lines.append_array(CONTROLS)
 	var buttons: Array = [["Continue digging" if has_save else "Start digging", Callable(game, "start_playing")]]
 	if has_save:
 		lines.append("")
 		lines.append("So far: %d treasures found, %s coins to spend, %s m down at the deepest." % [game.found_count(), thousands(game.coins), thousands(roundi(game.deepest))])
-		buttons.append(["New world", Callable(self, "_ask_new_world").bind("title")])
+		buttons.append(["New game", Callable(self, "_ask_new_game").bind("title")])
 	_show_simple("DEEP FINDS", lines, buttons)
 
 
@@ -203,29 +204,28 @@ func show_pause() -> void:
 	var lines: Array = [""]
 	lines.append_array(CONTROLS)
 	lines.append("")
-	lines.append("Going home leaves a rope hanging here: the rope lift by your door brings you straight back.")
+	lines.append("To get home, climb back up or use a checkpoint: find one deep down and unlock its waystone.")
 	_show_simple("Paused", lines, [
 		["Resume", Callable(game, "resume")],
-		["Go home", Callable(game, "return_home")],
-		["New world", Callable(self, "_ask_new_world").bind("paused")],
+		["New game", Callable(self, "_ask_new_game").bind("paused")],
 		["Save and quit", Callable(game, "save_and_quit")],
 	])
 
 
-func _ask_new_world(from: String) -> void:
+func _ask_new_game(from: String) -> void:
 	confirm_from = from
-	game.ask_new_world()
+	game.ask_new_game()
 
 
-func show_new_world_confirm() -> void:
-	_show_simple("New world?", ["All the ground under your house is made anew: new caves, ore, treasure and hidden rooms.", "Your coins, gear, pack, house, scrolls and journal stay with you."], [
-		["Yes, new world", Callable(game, "new_world")],
-		["Cancel", Callable(game, "cancel_new_world")],
+func show_new_game_confirm() -> void:
+	_show_simple("Start a new game?", ["Everything starts over: a new world, and no coins, gear, pack, house, furniture, scrolls or journal.", "There's no going back to this game afterwards."], [
+		["Yes, start over", Callable(game, "new_game")],
+		["Cancel", Callable(game, "cancel_new_game")],
 	])
 
 
 func show_dead() -> void:
-	_show_simple("Knocked out!", ["Everything goes dark...", "You come round at home, a bit bruised. You keep everything you had.", "The guards you left standing are back on their feet. The rope lift by your door takes you back down."], [
+	_show_simple("Knocked out!", ["Everything goes dark...", "You come round at home, a bit bruised. You keep everything you had.", "The guards you left standing are back on their feet. The rope lift by your door takes you down to any checkpoint you've unlocked."], [
 		["Wake up", Callable(game, "wake_up")],
 	])
 
@@ -257,6 +257,8 @@ func refresh() -> void:
 			_map()
 		"journal":
 			_journal()
+		"travel":
+			_travel()
 
 
 func _close_hint(text: String) -> void:
@@ -735,6 +737,44 @@ func _carrying_text() -> String:
 	return "In your pack: " + ("  ·  ".join(parts) if not parts.is_empty() else "no ore or bars") + "  ·  Coins: %s" % thousands(game.coins)
 
 
+# --- Checkpoints -----------------------------------------------------------------------------------
+
+# Where a waystone (or the rope lift at home) can take you: home, and every checkpoint you've
+# unlocked, shallowest first.
+func _travel() -> void:
+	var here: String = _data.get("here", "home") if _data is Dictionary else "home"
+	_open("Checkpoints")
+	_box.add_child(_centered(_wrapped(_label("Travel home, or to any checkpoint you've unlocked. Checkpoints are the only way home from deep down, short of climbing.", 15, DIM), 760)))
+	var list := _scroll_list(_box, Vector2(760, 380))
+	if here != "home":
+		list.add_child(_travel_row("Home", "Your house, the workbench and the forge", "home"))
+	var ids: Array = game.checkpoints.keys()
+	ids.sort_custom(func(a, b) -> bool: return float(game.checkpoints[a]["depth"]) < float(game.checkpoints[b]["depth"]))
+	for id in ids:
+		if id == here:
+			continue
+		var cp: Dictionary = game.checkpoints[id]
+		list.add_child(_travel_row(cp["name"], "%s m down" % thousands(roundi(float(cp["depth"]))), id))
+	if ids.is_empty() and here == "home":
+		list.add_child(_wrapped(_label("You haven't unlocked any checkpoints yet. They're deep down, behind walls of ward stone nothing digs through, with a single way in.", 15), 740))
+	_close_hint("E or Esc to close")
+
+
+func _travel_row(title: String, text: String, id: String) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	var info := VBoxContainer.new()
+	info.add_theme_constant_override("separation", 0)
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info.add_child(_label(title, 18, Color(0.35, 1.0, 0.82) if id != "home" else GOLD))
+	info.add_child(_label(text, 13, DIM))
+	row.add_child(info)
+	var go := _button("Go", Callable(game, "travel").bind(id), Vector2(100, 36), 16)
+	go.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(go)
+	return row
+
+
 # --- The map table -------------------------------------------------------------------------------
 
 func _map() -> void:
@@ -755,7 +795,10 @@ func _map() -> void:
 		var st: Dictionary = game.room_state.get(id, {})
 		var status := "Sealed"
 		var color := TEXT
-		if room["type"] == "trial":
+		if room["type"] == "checkpoint":
+			status = "Unlocked" if game.checkpoints.has(id) else "Its door is somewhere along its walls"
+			color = GOOD if game.checkpoints.has(id) else TEXT
+		elif room["type"] == "trial":
 			status = "Visited" if st.get("seen", false) else "Its door is somewhere along its walls"
 			color = GOOD if st.get("seen", false) else TEXT
 		elif st.get("opened", false):
@@ -766,7 +809,7 @@ func _map() -> void:
 			color = GOOD if left == 0 else Color(1.0, 0.7, 0.45)
 		var line := HBoxContainer.new()
 		line.add_theme_constant_override("separation", 14)
-		var name := _label(room["name"], 17, Color(0.6, 0.85, 1.0) if room["type"] == "trial" else (GOLD if room["type"] == "treasure" else TEXT))
+		var name := _label(room["name"], 17, {"trial": Color(0.6, 0.85, 1.0), "checkpoint": Color(0.35, 1.0, 0.82), "treasure": GOLD}.get(room["type"], TEXT))
 		name.custom_minimum_size = Vector2(150, 0)
 		line.add_child(name)
 		var where := _label("%s m down, %d m %s" % [thousands(roundi(float(room["depth"]))), roundi(to.length()), dir], 15)

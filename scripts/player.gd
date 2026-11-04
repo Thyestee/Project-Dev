@@ -1,8 +1,9 @@
 extends Node3D
-# You: first-person walking (ducking and crawling through tight spots on your own), health and
-# stamina, and what you hold: the pickaxe (left click digs, right click flattens), a sword or a
-# mace (with your shield on the other arm), or explosives. Only digging, swinging a weapon and
-# blocking with your shield tire you out; running and jumping never do.
+# You: first-person walking (ducking and crawling through tight spots on your own, and climbing
+# walls while you hold Alt), health and stamina, and what you hold: the pickaxe (left click digs,
+# right click flattens), a sword or a mace (with your shield on the other arm), or explosives.
+# Only digging, swinging a weapon and blocking with your shield tire you out; running, jumping and
+# climbing never do.
 
 const Blocks := preload("res://scripts/blocks.gd")
 const Items := preload("res://scripts/items.gd")
@@ -28,6 +29,10 @@ const MOUSE_SENSITIVITY := 0.0025
 const BASE_HEALTH := 100.0
 const BASE_STAMINA := 100.0
 const STAMINA_REGEN := 28.0
+const CLIMB_SPEED := 2.6        # up a wall, holding the climb key
+const CLIMB_DOWN_SPEED := 2.2
+const CLIMB_SIDE_SPEED := 1.6
+const CLIMB_REACH := 0.18       # how far in front of you a wall can be to hold on to
 const SLOTS := ["pickaxe", "sword", "mace", "bomb"]
 const SLOT_NAMES := ["Pickaxe", "Sword", "Mace", "Explosives"]
 
@@ -53,6 +58,7 @@ var body
 var yaw := 0.0
 var pitch := 0.0
 var crouching := false    # holding the crouch key (you also duck on your own where it's low)
+var climbing := false     # holding on to a wall (the climb key)
 var target := {}          # what's under the crosshair, from world.raycast()
 var target_enemy = null   # the guard under the crosshair, if nearer than the block
 var slot := 0
@@ -87,6 +93,7 @@ var _hitstop := 0.0
 var _sway := Vector2.ZERO
 var _bob := 0.0
 var _step_dist := 0.0
+var _climbed := 0.0       # metres climbed since the last climbing sound
 var _hand: Node3D
 var _tools := {}          # slot name -> Node3D in your right hand
 var _shield: Node3D
@@ -328,12 +335,26 @@ func _walk(delta: float) -> void:
 		speed *= 0.45 * (1.0 + game.global_affix("swift") / 100.0)
 	speed *= 1.0 + game.global_affix("swift") / 100.0
 	var v: Vector3 = body.velocity
-	var blend := 1.0 - exp(-delta * (12.0 if body.on_floor else 3.0))
-	v.x = lerpf(v.x, wish.x * speed, blend)
-	v.z = lerpf(v.z, wish.z * speed, blend)
-	if body.on_floor and not crouching and tall > CROUCH_HEIGHT and Input.is_action_pressed("jump"):
-		v.y = JUMP_SPEED
-	v.y = maxf(v.y - GRAVITY * delta, -40.0)
+	climbing = _can_climb(wish)
+	if climbing:
+		# Holding on to the wall: forward climbs, back climbs down, nothing holds you still, and
+		# you can edge sideways along it.
+		var blend := 1.0 - exp(-delta * 14.0)
+		var up := -input.y
+		v.y = lerpf(v.y, CLIMB_SPEED * up if up > 0.0 else CLIMB_DOWN_SPEED * up, blend)
+		v.x = lerpf(v.x, wish.x * CLIMB_SIDE_SPEED, blend)
+		v.z = lerpf(v.z, wish.z * CLIMB_SIDE_SPEED, blend)
+		_climbed += absf(v.y) * delta
+		if _climbed > 0.45:
+			_climbed = 0.0
+			game.sfx.play("step", randf_range(0.6, 0.8), -10.0)
+	else:
+		var blend := 1.0 - exp(-delta * (12.0 if body.on_floor else 3.0))
+		v.x = lerpf(v.x, wish.x * speed, blend)
+		v.z = lerpf(v.z, wish.z * speed, blend)
+		if body.on_floor and not crouching and tall > CROUCH_HEIGHT and Input.is_action_pressed("jump"):
+			v.y = JUMP_SPEED
+		v.y = maxf(v.y - GRAVITY * delta, -40.0)
 	body.velocity = v
 	body.move(v * delta)
 	position = body.position
@@ -352,6 +373,26 @@ func _walk(delta: float) -> void:
 	if body.cur_height < HEIGHT:
 		_eye = minf(_eye, world.headroom(body.lo(), body.hi(), HEIGHT) - 0.1)
 	_eye_offset *= exp(-delta * 14.0)
+
+
+# Holding the climb key (Alt) against a wall you're moving or looking towards. Trials and
+# checkpoints are built of stone too smooth to climb.
+func _can_climb(wish: Vector3) -> bool:
+	if not Input.is_action_pressed("climb"):
+		return false
+	var toward := wish if wish.length() > 0.1 else Vector3(-sin(yaw), 0.0, -cos(yaw))
+	toward = toward.normalized() * CLIMB_REACH
+	var lo: Vector3 = body.lo() + toward
+	var hi: Vector3 = body.hi() + toward
+	lo.y = body.position.y + 0.3
+	match world.grip(lo, hi):
+		1:
+			return true
+		2:
+			if _tired_note <= 0.0:
+				_tired_note = 3.0
+				game.toast("This stone is too smooth to climb.", Color(0.6, 0.85, 1.0))
+	return false
 
 
 # --- Using what you hold ----------------------------------------------------------------------
