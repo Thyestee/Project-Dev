@@ -1480,20 +1480,26 @@ func sell_all(sort: String) -> void:
 	_bought()
 
 
-# Smelts a recipe up to `times` times over, as far as your pack has what it needs. The batch is
-# worked out as a whole, so a full pack can still smelt once the ore it uses up makes room.
+# How many times over a recipe can be smelted, up to `times`: as far as your pack has what it
+# needs and room for the bars. The batch is worked out as a whole, so in a full pack a new stack
+# of bars fits only if the batch uses up a stack. Your pack is left as it is.
+func smelt_count(k: int, times: int) -> int:
+	var recipe: Dictionary = Goods.SMELT[k]
+	var n := mini(times, Goods.times(bag, recipe["in"]))
+	while n > 0 and _smelted(recipe["in"], recipe["out"], n).is_empty():
+		n -= 1
+	return n
+
+
+# Smelts a recipe up to `times` times over, as far as it fits (see smelt_count).
 func smelt(k: int, times: int) -> void:
 	var recipe: Dictionary = Goods.SMELT[k]
 	var needs: Dictionary = recipe["in"]
-	var n := mini(times, Goods.times(bag, needs))
-	while n > 0:
-		var after := _smelted(needs, recipe["out"], n)
-		if not after.is_empty():
-			bag.clear()
-			bag.append_array(after)
-			break
-		n -= 1
+	var n := smelt_count(k, times)
 	if n > 0:
+		var after := _smelted(needs, recipe["out"], n)
+		bag.clear()
+		bag.append_array(after)
 		sfx.play("hiss", 0.7, -4.0)
 		sfx.play("anvil", 1.3, -10.0)
 		toast("Smelted %s." % Goods.amount(recipe["out"], n), Hud.GOLD)

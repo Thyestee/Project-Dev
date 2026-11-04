@@ -70,6 +70,8 @@ var _slot_style: StyleBoxFlat
 var _slot_selected_style: StyleBoxFlat
 var _toast: Label
 var _toast_time := 0.0
+var _toast_over_menu := false
+var _toast_strip: StyleBoxFlat
 var _find_box: VBoxContainer
 var _find_time := 0.0
 var _hurt: ColorRect
@@ -317,16 +319,28 @@ func _build_top(root: Control) -> void:
 	top.add_child(_compass)
 
 
+# Toasts get a layer of their own above the menus (layer 10), so what a menu's buttons say can be
+# seen over it.
 func _build_messages(root: Control) -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 11
+	add_child(layer)
 	_toast = _centered(_label("", 18))
 	_toast.anchor_left = 0.5
 	_toast.anchor_right = 0.5
-	_toast.offset_left = -450
-	_toast.offset_right = 450
-	_toast.offset_top = 110
 	_toast.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_toast.modulate.a = 0.0
-	root.add_child(_toast)
+	layer.add_child(_toast)
+	_toast_strip = StyleBoxFlat.new()
+	_toast_strip.bg_color = Color(0.13, 0.095, 0.06, 0.95)
+	_toast_strip.border_color = Color(0.55, 0.43, 0.24)
+	_toast_strip.set_border_width_all(2)
+	_toast_strip.set_corner_radius_all(6)
+	_toast_strip.content_margin_left = 16
+	_toast_strip.content_margin_right = 16
+	_toast_strip.content_margin_top = 6
+	_toast_strip.content_margin_bottom = 6
+	_place_toast(false)
 	_find_box = VBoxContainer.new()
 	_find_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_find_box.anchor_left = 0.5
@@ -433,6 +447,8 @@ func _slot_info() -> String:
 
 func update_status(delta: float) -> void:
 	var player = game.player
+	if _menu_open() != _toast_over_menu:
+		_place_toast(not _toast_over_menu)
 	if _toast_time > 0.0:
 		_toast_time -= delta
 		_toast.modulate.a = clampf(_toast_time / 0.5, 0.0, 1.0)
@@ -504,6 +520,36 @@ func toast(text: String, color := TEXT) -> void:
 	_toast.add_theme_color_override("font_color", color)
 	_toast_time = 3.5
 	_toast.modulate.a = 1.0
+	_place_toast(_menu_open())
+
+
+func _menu_open() -> bool:
+	return game.menus != null and game.menus.showing()
+
+
+# While you play, a toast shows near the top of the screen. Over a menu it goes at the bottom, on
+# a strip as wide as its words (up to the width of the screen), where it hides as little of the
+# menu as it can.
+func _place_toast(over_menu: bool) -> void:
+	_toast_over_menu = over_menu
+	var width := 900.0
+	if over_menu:
+		var words := _toast.get_theme_font("font").get_string_size(_toast.text, HORIZONTAL_ALIGNMENT_LEFT, -1, _toast.get_theme_font_size("font_size"))
+		width = minf(words.x + _toast_strip.get_margin(SIDE_LEFT) + _toast_strip.get_margin(SIDE_RIGHT) + 8.0, _toast.get_viewport_rect().size.x - 40.0)
+		_toast.add_theme_stylebox_override("normal", _toast_strip)
+	else:
+		_toast.remove_theme_stylebox_override("normal")
+	_toast.offset_left = -width / 2.0
+	_toast.offset_right = width / 2.0
+	# The height it needs at this width. What it had worked out was for the old width, and it
+	# wouldn't shrink on its own, so the height is set outright.
+	_toast.update_minimum_size()
+	var height := _toast.get_minimum_size().y
+	_toast.anchor_top = 1.0 if over_menu else 0.0
+	_toast.anchor_bottom = _toast.anchor_top
+	_toast.grow_vertical = Control.GROW_DIRECTION_BEGIN if over_menu else Control.GROW_DIRECTION_END
+	_toast.offset_top = -6.0 - height if over_menu else 110.0
+	_toast.offset_bottom = _toast.offset_top + height
 
 
 func show_find(t: int, value: int) -> void:
@@ -523,11 +569,10 @@ func show_find(t: int, value: int) -> void:
 	_find_box.modulate.a = 1.0
 
 
-func hide_messages() -> void:
+# A menu opening hides the big "You found" message. Toasts stay, shown over the menu.
+func hide_find() -> void:
 	_find_time = 0.0
 	_find_box.modulate.a = 0.0
-	_toast_time = 0.0
-	_toast.modulate.a = 0.0
 
 
 func flash_hurt(strength: float) -> void:

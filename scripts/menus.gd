@@ -151,9 +151,14 @@ static func thousands(n: int) -> String:
 	return s + out
 
 
+func showing() -> bool:
+	return _root.visible
+
+
+# Messages (toasts) stay: they're drawn over the menus, so what a button does can be seen.
 func _open(title: String, title_size := 40) -> void:
 	_clear(_box)
-	game.hud.hide_messages()
+	game.hud.hide_find()
 	_root.visible = true
 	_box.add_child(_centered(_label(title, title_size, GOLD)))
 
@@ -624,20 +629,26 @@ func _forge() -> void:
 		var recipe: Dictionary = Goods.SMELT[k]
 		var out: String = recipe["out"]
 		var can: int = Goods.times(game.bag, recipe["in"])
+		# In a full pack a new stack of bars only fits if the batch uses up a stack, as All can.
+		var fits: int = game.smelt_count(k, can)
+		var one_fits: bool = can > 0 and game.smelt_count(k, 1) == 1
+		var text := "%s  ·  enough for %d" % [Goods.needs_text(recipe["in"]), can]
+		if can > 0 and not one_fits:
+			text += "\n" + ("Your pack is full, but All fits: it uses up a whole stack." if fits > 0 else "No room in your pack for the bars.")
 		var line := HBoxContainer.new()
 		line.add_theme_constant_override("separation", 6)
 		var info := VBoxContainer.new()
 		info.add_theme_constant_override("separation", 0)
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_child(_label(Goods.LIST[out]["name"], 15, Goods.LIST[out]["color"]))
-		info.add_child(_wrapped(_label("%s  ·  enough for %d" % [Goods.needs_text(recipe["in"]), can], 11, DIM if can > 0 else BAD), 190))
+		info.add_child(_wrapped(_label(text, 11, DIM if one_fits else BAD), 190))
 		line.add_child(info)
 		var one := _button("Smelt", Callable(game, "smelt").bind(k, 1), Vector2(62, 30), 13)
-		one.disabled = can <= 0
+		one.disabled = not one_fits
 		one.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		line.add_child(one)
 		var all := _button("All", Callable(game, "smelt").bind(k, can), Vector2(44, 30), 13)
-		all.disabled = can <= 1
+		all.disabled = fits <= 1
 		all.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		line.add_child(all)
 		smelt.add_child(line)
